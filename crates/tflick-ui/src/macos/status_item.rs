@@ -15,7 +15,7 @@ use tflick_ipc::ToUi;
 /// Length of a status item sized to its content (`NSVariableStatusItemLength`).
 const VARIABLE_LENGTH: f64 = -1.0;
 
-/// The SHZ mark (icons/shz-mark.svg) as a one-color template, 18pt at 2x; its center dot is a
+/// The SHZ mark (icons/shz-mark.svg) as a one-color template, 15pt at 2x; its center dot is a
 /// hole since template images only use alpha.
 const ICON: &[u8] = include_bytes!("../../icons/shz-menubar.png");
 
@@ -83,7 +83,7 @@ pub fn install_status_item(tx: Sender<ToUi>) {
         // A template image follows the menu bar's light/dark look like system icons do.
         match NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(ICON)) {
             Some(image) => {
-                image.setSize(NSSize::new(18.0, 18.0));
+                image.setSize(NSSize::new(15.0, 15.0));
                 image.setTemplate(true);
                 button.setImage(Some(&image));
             }
