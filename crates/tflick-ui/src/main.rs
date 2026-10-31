@@ -4,7 +4,8 @@
 //! Layers, outer to inner:
 //! - `main`: starts the app and the popup window.
 //! - `controller`: polling loop, the only place that combines IPC, Accessibility and the window.
-//! - `ipc`, `macos`: I/O and OS glue (all `unsafe` lives in `macos`).
+//! - `ipc`, `macos`: I/O and OS glue (all `unsafe` lives in `macos`), including the menu bar
+//!   icon, whose menu posts to the same channel as the socket.
 //! - `view`, `settings_view`: what the popup and the settings window look like.
 //! - `settings`: the user's settings (a gpui global, saved as JSON); `login`: launch at login.
 //! - `follow`, `layout`: pure decisions and geometry, unit tested.
@@ -38,9 +39,12 @@ use settings::Settings;
 use view::{Assets, Popup};
 
 fn main() {
-    let rx = ipc::listen();
+    // Messages from every tflick (socket) and from the menu bar icon.
+    let (tx, rx) = std::sync::mpsc::channel();
+    ipc::listen(tx.clone());
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         macos::hide_from_dock();
+        macos::install_status_item(tx);
         let settings = Settings::load();
         let bounds = Bounds {
             origin: point(px(0.), px(0.)),

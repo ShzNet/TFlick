@@ -5,7 +5,9 @@
 //! here uses the top-left space.
 
 mod ax;
+mod status_item;
 mod window;
 
 pub use ax::*;
+pub use status_item::install_status_item;
 pub use window::*;

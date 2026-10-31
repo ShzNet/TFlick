@@ -10,7 +10,7 @@ anyhow.workspace = true
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 raw-window-handle = "0.6"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSButton", "NSControl", "NSEvent", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
 tflick-ipc = { version = "0.1.0", path = "../tflick-ipc" }
 serde = { version = "1", features = ["derive"] }
