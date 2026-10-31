@@ -34,13 +34,14 @@ impl Drop for RawMode {
 fn pty_size() -> PtySize {
     // window_size also reports pixels, which the popup needs later (cell size).
     match terminal::window_size() {
-        Ok(s) => PtySize {
+        // Some pseudo-terminals (e.g. `script`) report 0x0; an empty grid would panic later.
+        Ok(s) if s.rows > 0 && s.columns > 0 => PtySize {
             rows: s.rows,
             cols: s.columns,
             pixel_width: s.width,
             pixel_height: s.height,
         },
-        Err(_) => PtySize {
+        _ => PtySize {
             rows: 24,
             cols: 80,
             pixel_width: 0,
@@ -69,6 +70,17 @@ fn main() -> Result<()> {
     let session = format!("{}-{nanos}", process::id());
     cmd.env("TFLICK_SESSION_ID", &session);
 
+    let raw = RawMode::enable()?;
+    // Ask the real terminal where its cursor is (DSR). Must happen before the stdin thread starts
+    // reading (the answer arrives on stdin) and before the shell starts (a slow or missing answer
+    // times out after 2s, and a shell that exits meanwhile would lose its output).
+    let start_cursor = crossterm::cursor::position().ok();
+    let popup = Arc::new(Mutex::new(ui::Popup::new(
+        session,
+        pty_size(),
+        start_cursor,
+    )));
+
     let mut child = pair.slave.spawn_command(cmd)?;
     // Drop our copy of the slave so the reader sees EOF once the shell exits.
     drop(pair.slave);
@@ -76,16 +88,6 @@ fn main() -> Result<()> {
     let master = pair.master;
     let mut reader = master.try_clone_reader()?;
     let mut writer = master.take_writer()?;
-
-    let raw = RawMode::enable()?;
-    // Ask the real terminal where its cursor is (DSR). Must happen before the stdin thread starts
-    // reading, since the answer arrives on stdin. Times out (None) on terminals that don't reply.
-    let start_cursor = crossterm::cursor::position().ok();
-    let popup = Arc::new(Mutex::new(ui::Popup::new(
-        session,
-        pty_size(),
-        start_cursor,
-    )));
 
     // stdin -> pty. Blocks on read forever; the process exits without joining it.
     let input_popup = popup.clone();
