@@ -1,56 +1,48 @@
-//! P2a spike: a non-activating blurred gpui popup that follows the mouse every 50ms,
-//! changes its content and toggles visibility, to measure flicker, CPU and latency.
-//! `cargo run -p tflick-ui` then watch; click the popup and check the app behind keeps focus.
+//! `tflick-ui`: one daemon per user. Listens on a unix socket for `ToUi` messages from every
+//! `tflick` and draws the suggestion popup next to the terminal cursor.
+
+mod macos;
 
 use std::borrow::Cow;
-use std::time::{Duration, Instant};
+use std::io::{BufRead, BufReader};
+use std::os::unix::net::UnixListener;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+use std::time::Duration;
 
 use gpui::{
     App, Application, AssetSource, Bounds, Context, FontWeight, SharedString, Window,
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div,
     point, prelude::*, px, rgba, size, svg,
 };
-use objc2::rc::Retained;
-use objc2_app_kit::{NSEvent, NSView, NSWindow};
-use objc2_foundation::NSPoint;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use macos::Rect;
+use tflick_ipc::{Item, Kind, ToUi};
 
-/// Suggestion kinds, matching Fig's suggestion types; each has an icon and an accent color.
-#[derive(Clone, Copy)]
-enum Kind {
-    Subcommand,
-    Option,
-    Arg,
-    Folder,
-    File,
-    Branch,
-    History,
+const POPUP_W: f64 = 460.0;
+const POPUP_H: f64 = 230.0;
+
+fn icon(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Subcommand => "icons/subcommand.svg",
+        Kind::Option => "icons/option.svg",
+        Kind::Arg => "icons/arg.svg",
+        Kind::Folder => "icons/folder.svg",
+        Kind::File => "icons/file.svg",
+        Kind::Branch => "icons/branch.svg",
+        Kind::History => "icons/history.svg",
+    }
 }
 
-impl Kind {
-    fn icon(self) -> &'static str {
-        match self {
-            Kind::Subcommand => "icons/subcommand.svg",
-            Kind::Option => "icons/option.svg",
-            Kind::Arg => "icons/arg.svg",
-            Kind::Folder => "icons/folder.svg",
-            Kind::File => "icons/file.svg",
-            Kind::Branch => "icons/branch.svg",
-            Kind::History => "icons/history.svg",
-        }
-    }
-
-    /// Accent color 0xRRGGBB00, alpha added by the caller.
-    fn color(self) -> u32 {
-        match self {
-            Kind::Subcommand => 0x8b5cf600,
-            Kind::Option => 0x3b82f600,
-            Kind::Arg => 0x14b8a600,
-            Kind::Folder => 0xf59e0b00,
-            Kind::File => 0x64748b00,
-            Kind::Branch => 0xf9731600,
-            Kind::History => 0x22c55e00,
-        }
+/// Accent color 0xRRGGBB00, alpha added by the caller.
+fn color(kind: Kind) -> u32 {
+    match kind {
+        Kind::Subcommand => 0x8b5cf600,
+        Kind::Option => 0x3b82f600,
+        Kind::Arg => 0x14b8a600,
+        Kind::Folder => 0xf59e0b00,
+        Kind::File => 0x64748b00,
+        Kind::Branch => 0xf9731600,
+        Kind::History => 0x22c55e00,
     }
 }
 
@@ -77,53 +69,6 @@ impl AssetSource for Assets {
     }
 }
 
-const ITEMS: [(Kind, &str, &str); 8] = [
-    (
-        Kind::Subcommand,
-        "checkout",
-        "Switch branches or restore working tree files",
-    ),
-    (
-        Kind::Subcommand,
-        "commit",
-        "Record changes to the repository",
-    ),
-    (
-        Kind::Option,
-        "--amend",
-        "Replace the tip of the current branch",
-    ),
-    (
-        Kind::Arg,
-        "<pathspec>",
-        "Limit the paths affected by the operation",
-    ),
-    (Kind::Folder, "src/", "Folder"),
-    (Kind::File, "Cargo.toml", "File"),
-    (Kind::Branch, "main", "Branch · 2 hours ago"),
-    (Kind::History, "git commit -m \"wip\"", "From history"),
-];
-
-struct Popup {
-    tick: usize,
-    /// Background tint alpha 0-255: higher hides the content behind more.
-    tint: u32,
-    max_frame: Duration,
-    last_scale: f32,
-}
-
-// SkyLight private API, same declaration gpui uses (gpui-0.2.2/src/platform/mac/window.rs:94).
-// Also what Terminal.app, kitty and Alacritty use for background blur.
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGSMainConnectionID() -> *mut std::ffi::c_void;
-    fn CGSSetWindowBackgroundBlurRadius(
-        connection_id: *mut std::ffi::c_void,
-        window_id: isize,
-        radius: i64,
-    ) -> i32;
-}
-
 /// Tuning knobs, overridable without rebuilding: `TFLICK_BLUR=60 TFLICK_TINT=230`.
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key)
@@ -132,86 +77,143 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-/// Blurs whatever is behind the window. gpui's `Blurred` uses a light NSVisualEffectView with no
-/// radius control, so we keep the window `Transparent` and set the blur radius ourselves.
-fn set_blur(ns_window: &NSWindow, radius: i64) {
-    // SAFETY: plain C call on our own window number; returns an error code we can ignore.
-    unsafe {
-        CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), ns_window.windowNumber(), radius);
-    }
-}
-
-/// The NSWindow behind a gpui window.
-/// ponytail: gpui 0.2.2 has no public move API, so we reach the NSWindow through the raw
-/// handle. Drop this once gpui exposes `set_position`.
-fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
-    // gpui::Window has an inherent `window_handle()` too, so call the trait explicitly.
-    let handle = HasWindowHandle::window_handle(window).ok()?;
-    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
-        return None;
-    };
-    // SAFETY: gpui hands out a valid NSView pointer for the lifetime of the window.
-    let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
-    view.window()
-}
-
-/// Moves the popup just below-right of the mouse and shows or hides it.
+/// Where the popup's top-left corner goes, in global top-left coordinates: just under the
+/// cursor cell, flipped above it near the bottom of the screen, shifted left near the right edge.
 ///
-/// Must run OUTSIDE any gpui `update`: moving to a screen with another scale makes AppKit call
-/// gpui's resize callback synchronously, and that callback fails while the window is borrowed
-/// by an update, leaving gpui's scale factor stale (content drawn at half or double size).
-fn follow_mouse(ns_window: &NSWindow, visible: bool) {
-    // Both values are in Cocoa coordinates (origin bottom-left), so no flipping needed here.
-    let mouse = NSEvent::mouseLocation();
-    ns_window.setFrameTopLeftPoint(NSPoint::new(mouse.x + 12.0, mouse.y - 18.0));
-    if !visible {
-        ns_window.orderOut(None);
-    } else if !ns_window.isVisible() {
-        ns_window.orderFrontRegardless();
+/// The text grid's origin inside the window is unknown (title bar, tab bar, padding vary per
+/// terminal), so we assume the grid is centered horizontally and sits at the bottom with the
+/// same padding as the sides: everything left over at the top is title bar + tabs.
+/// ponytail: heuristic; add per-terminal offsets in config, or the AX caret (P6), when it's off.
+fn popup_origin(
+    win: Rect,
+    cursor: (u16, u16),
+    grid: (u16, u16),
+    cell_px: Option<(f32, f32)>,
+    screens: &[Rect],
+) -> (f64, f64) {
+    let (cols, rows) = (f64::from(grid.0.max(1)), f64::from(grid.1.max(1)));
+    let (cw, ch) = match cell_px {
+        Some((w, h)) => {
+            let (w, h) = (f64::from(w), f64::from(h));
+            // Some terminals report device pixels, not points: the grid would be ~2x the window.
+            let scale = (w * cols / win.w).round().max(1.0);
+            (w / scale, h / scale)
+        }
+        None => (win.w / cols, (win.h - 28.0) / rows),
+    };
+    let side = ((win.w - cols * cw) / 2.0).max(0.0);
+    let top = (win.h - rows * ch - side).max(0.0);
+    let caret_x = win.x + side + f64::from(cursor.0) * cw;
+    let caret_y = win.y + top + f64::from(cursor.1) * ch;
+
+    let screen = screens
+        .iter()
+        .find(|s| caret_x >= s.x && caret_x < s.x + s.w && caret_y >= s.y && caret_y < s.y + s.h)
+        .or(screens.first())
+        .copied()
+        .unwrap_or(win);
+    let mut y = caret_y + ch;
+    if y + POPUP_H > screen.y + screen.h {
+        y = caret_y - POPUP_H;
     }
+    let x = caret_x.min(screen.x + screen.w - POPUP_W).max(screen.x);
+    (x, y)
+}
+
+/// Accepts any number of `tflick` connections; every parsed message goes to the UI thread.
+fn listen() -> Receiver<ToUi> {
+    let path = tflick_ipc::socket_path();
+    // A stale socket from a crashed run would make bind fail.
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path).expect("bind tflick-ui socket");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                for line in BufReader::new(conn).lines() {
+                    let Ok(line) = line else { break };
+                    match serde_json::from_str(&line) {
+                        Ok(msg) => {
+                            if tx.send(msg).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => eprintln!("tflick-ui: bad message: {e}"),
+                    }
+                }
+            });
+        }
+    });
+    rx
+}
+
+struct Popup {
+    items: Vec<Item>,
+    selected: usize,
+    /// Background tint alpha 0-255: higher hides the content behind more.
+    tint: u32,
 }
 
 impl Popup {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let ns_window = ns_window(window).expect("gpui window has an NSWindow");
-        set_blur(&ns_window, env_or("TFLICK_BLUR", 30));
+    fn new(window: &mut Window, cx: &mut Context<Self>, rx: Receiver<ToUi>) -> Self {
+        let ns_window = macos::ns_window(window).expect("gpui window has an NSWindow");
+        macos::set_blur(&ns_window, env_or("TFLICK_BLUR", 30));
+        macos::hide(&ns_window);
         cx.spawn_in(window, async move |this, cx| {
-            let mut tick = 0usize;
+            // Session currently shown; Hide from another shell must not close it.
+            let mut shown: Option<String> = None;
             loop {
+                // ponytail: polls every 16ms; switch to an async channel if idle CPU matters.
                 cx.background_executor()
-                    .timer(Duration::from_millis(50))
+                    .timer(Duration::from_millis(16))
                     .await;
-                tick += 1;
-                let start = Instant::now();
-                // This async task runs on the main thread, between gpui updates.
-                // Visible 3s, hidden 0.5s, to check for flicker on re-show.
-                follow_mouse(&ns_window, tick % 70 < 60);
-                let ok = this.update_in(cx, |this, window, cx| {
-                    this.tick = tick;
-                    cx.notify();
-                    this.max_frame = this.max_frame.max(start.elapsed());
-                    // Log scale changes (moving between Retina and 1x screens).
-                    let sf = window.scale_factor();
-                    if sf != this.last_scale {
-                        eprintln!("tick {tick} scale {sf} bounds {:?}", window.bounds().origin);
-                        this.last_scale = sf;
+                let mut update = None;
+                // Window moves happen here, OUTSIDE gpui updates (see macos::show_at).
+                for msg in rx.try_iter() {
+                    match msg {
+                        ToUi::Show {
+                            session,
+                            items,
+                            selected,
+                            cursor,
+                            grid,
+                            cell_px,
+                        } => {
+                            let Some(win) = macos::focused_window_frame() else {
+                                continue;
+                            };
+                            let (x, y) =
+                                popup_origin(win, cursor, grid, cell_px, &macos::screens());
+                            macos::show_at(&ns_window, x, y);
+                            shown = Some(session);
+                            update = Some((items, selected));
+                        }
+                        ToUi::Hide { session } => {
+                            if shown.as_ref() == Some(&session) {
+                                macos::hide(&ns_window);
+                                shown = None;
+                            }
+                        }
                     }
-                    if tick % 100 == 0 {
-                        eprintln!("tick {tick} max update {:?}", this.max_frame);
-                        this.max_frame = Duration::ZERO;
+                }
+                if let Some((items, selected)) = update {
+                    let ok = this.update(cx, |this, cx| {
+                        this.items = items;
+                        this.selected = selected;
+                        cx.notify();
+                    });
+                    if ok.is_err() {
+                        break;
                     }
-                });
-                if ok.is_err() {
-                    break;
                 }
             }
         })
         .detach();
         Self {
-            tick: 0,
+            items: Vec::new(),
+            selected: 0,
             tint: env_or("TFLICK_TINT", 0xa0u32).min(255),
-            max_frame: Duration::ZERO,
-            last_scale: 0.0,
         }
     }
 }
@@ -231,20 +233,17 @@ impl Render for Popup {
         } else {
             (0xf5f5f700, 0x1d1d1f00)
         };
-        // Rotate items so content changes every tick, like a real popup while typing.
-        let selected = (self.tick / 10) % ITEMS.len();
-        let rows = (0..ITEMS.len()).map(|i| {
-            let (kind, name, desc) = ITEMS[(i + self.tick / 20) % ITEMS.len()];
-            let is_selected = i == selected;
+        let rows = self.items.iter().enumerate().map(|(i, item)| {
+            let is_selected = i == self.selected;
             // Bare icon in the kind's accent color (white on the selected row).
             let icon = svg()
                 .flex_none()
-                .path(kind.icon())
+                .path(icon(item.kind))
                 .size_4()
                 .text_color(rgba(if is_selected {
                     0xffffffff
                 } else {
-                    kind.color() | 0xff
+                    color(item.kind) | 0xff
                 }));
             div()
                 .flex()
@@ -253,7 +252,7 @@ impl Render for Popup {
                 .px_2()
                 .py_0p5()
                 .rounded_md()
-                .when(i == selected, |d| {
+                .when(is_selected, |d| {
                     d.bg(rgba(0x3b82f6ff)).text_color(rgba(0xffffffff))
                 })
                 .child(icon)
@@ -261,14 +260,14 @@ impl Render for Popup {
                     div()
                         .flex_none()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(SharedString::from(name)),
+                        .child(SharedString::from(item.name.clone())),
                 )
-                .child(
+                .children(item.description.clone().map(|desc| {
                     div()
-                        .when(i != selected, |d| d.text_color(rgba(fg | 0xaa)))
+                        .when(!is_selected, |d| d.text_color(rgba(fg | 0xaa)))
                         .truncate()
-                        .child(SharedString::from(desc)),
-                )
+                        .child(SharedString::from(desc))
+                }))
         });
         div()
             .size_full()
@@ -287,24 +286,85 @@ impl Render for Popup {
 }
 
 fn main() {
+    let rx = listen();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
+        macos::hide_from_dock();
+        if !macos::accessibility_trusted(true) {
+            eprintln!(
+                "tflick-ui: needs Accessibility permission to find the terminal window.\n\
+                 Allow it in System Settings > Privacy & Security > Accessibility, then restart."
+            );
+        }
         let bounds = Bounds {
-            origin: point(px(200.), px(200.)),
-            size: size(px(460.), px(230.)),
+            origin: point(px(0.), px(0.)),
+            size: size(px(POPUP_W as f32), px(POPUP_H as f32)),
         };
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: None,
                 focus: false,
-                show: true,
+                show: false,
                 kind: WindowKind::PopUp,
                 is_movable: false,
                 window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Popup::new(window, cx)),
+            |window, cx| cx.new(|cx| Popup::new(window, cx, rx)),
         )
         .unwrap();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SCREEN: Rect = Rect {
+        x: 0.0,
+        y: 25.0,
+        w: 1512.0,
+        h: 920.0,
+    };
+
+    #[test]
+    fn below_cursor_with_title_bar_inferred() {
+        // 80x24 grid of 8x16pt cells, 4pt side padding, 28pt title bar.
+        let win = Rect {
+            x: 100.0,
+            y: 100.0,
+            w: 648.0,
+            h: 28.0 + 384.0 + 4.0,
+        };
+        let (x, y) = popup_origin(win, (10, 2), (80, 24), Some((8.0, 16.0)), &[SCREEN]);
+        assert_eq!(x, 100.0 + 4.0 + 80.0);
+        assert_eq!(y, 100.0 + 28.0 + 3.0 * 16.0);
+    }
+
+    #[test]
+    fn device_pixel_cell_sizes_are_scaled_down() {
+        let win = Rect {
+            x: 100.0,
+            y: 100.0,
+            w: 648.0,
+            h: 416.0,
+        };
+        let points = popup_origin(win, (10, 2), (80, 24), Some((8.0, 16.0)), &[SCREEN]);
+        let pixels = popup_origin(win, (10, 2), (80, 24), Some((16.0, 32.0)), &[SCREEN]);
+        assert_eq!(points, pixels);
+    }
+
+    #[test]
+    fn flips_above_near_screen_bottom_and_shifts_left_near_right_edge() {
+        let win = Rect {
+            x: 1000.0,
+            y: 500.0,
+            w: 648.0,
+            h: 416.0,
+        };
+        let (x, y) = popup_origin(win, (79, 23), (80, 24), Some((8.0, 16.0)), &[SCREEN]);
+        let caret_y = 500.0 + 28.0 + 23.0 * 16.0;
+        assert_eq!(y, caret_y - POPUP_H);
+        assert_eq!(x, SCREEN.w - POPUP_W);
+    }
 }

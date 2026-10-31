@@ -6,13 +6,15 @@ Terminal autocomplete kiểu Fig / Amazon Q, viết lại bằng Rust: **popup �
 
 | Phase | File | Ước lượng | Kết quả |
 |---|---|---|---|
-| P0 | [p0-pty.md](p0-pty.md) | 1–2 ngày | `tflick` bọc shell trong PTY, trong suốt với người dùng |
+| P0 ✅ | [p0-pty.md](p0-pty.md) | 1–2 ngày | `tflick` bọc shell trong PTY, trong suốt với người dùng |
 | P1 | [p1-shell-integration.md](p1-shell-integration.md) | 3–5 ngày | biết prompt, cwd, edit buffer + vị trí cursor |
-| P2 | [p2-popup-window.md](p2-popup-window.md) | 1–1,5 tuần | popup gpui (dữ liệu giả) bám đúng con trỏ |
+| P2 🟡 | [p2-popup-window.md](p2-popup-window.md) | 1–1,5 tuần | popup gpui (dữ liệu giả) bám đúng con trỏ |
 | P3 | [p3-parser-specs.md](p3-parser-specs.md) | 1–1,5 tuần | parse lệnh + nạp spec qua QuickJS |
 | P4 | [p4-suggestions-insert.md](p4-suggestions-insert.md) | 1 tuần | gợi ý thật, chọn bằng phím, chèn text |
 | P5 | [p5-generators.md](p5-generators.md) | 1 tuần | generator động (git branch, npm scripts…) |
 | P6 | [p6-polish.md](p6-polish.md) | liên tục | xếp hạng, bash/fish, cài đặt, caret AX chính xác |
+
+✅ xong · 🟡 đang làm · ⬜ chưa làm. Trạng thái chi tiết ở đầu file của từng phase.
 
 P2 không phụ thuộc P1 nên có thể làm song song. Vì đây là rủi ro lớn nhất, nên làm spike của P2 sớm nhất có thể.
 
@@ -73,7 +75,7 @@ TFlick/
 | # | Quyết định | Lý do | Đã cân nhắc |
 |---|---|---|---|
 | D1 | Popup đồ hoạ nổi, không vẽ trong terminal | người dùng muốn giao diện đẹp | vẽ ANSI trong terminal (kiểu inshellisense) |
-| D2 | UI bằng **gpui 0.2.2** | `PopUp` = NonactivatingPanel + PopUpWindowLevel (`gpui-0.2.2/src/platform/mac/window.rs:622,805`), có blur, đa nền tảng | webview tao/wry (nặng), egui (bị loại), AppKit thuần (chỉ chạy macOS) |
+| D2 | UI bằng **gpui 0.2.2** (spike đạt 2026-10-31) | `PopUp` = NonactivatingPanel + PopUpWindowLevel (`gpui-0.2.2/src/platform/mac/window.rs:622,805`), có blur, đa nền tảng | webview tao/wry (nặng), egui (bị loại), AppKit thuần (chỉ chạy macOS) |
 | D3 | Dời cửa sổ qua `HasWindowHandle` + objc2 `setFrameOrigin:` | gpui 0.2.2 chỉ có `resize`, chưa có API dời cửa sổ | mỗi lần dời lại tạo cửa sổ mới (chớp) |
 | D4 | Chạy spec bằng **rquickjs** trên JS đã compile | 226 spec có `postProcess`/`custom`, 198 spec có `script` | chỉ dùng phần khai báo (mất git branch, npm scripts…) |
 | D5 | Lưới màn hình bằng `alacritty_terminal` bản upstream, OSC 697 tự quét riêng | không phải giữ một fork | copy fork của Q (`refs/.../crates/alacritty_terminal`) nếu cách quét riêng không ổn |
@@ -84,7 +86,7 @@ TFlick/
 
 | Rủi ro | Phase | Giảm thiểu |
 |---|---|---|
-| gpui 0.2.2 cần Rust mới hơn 1.87 | P2 | `rustup update` (máy đang dùng 1.87) |
+| ~~gpui 0.2.2 cần Rust mới hơn 1.87~~ | P2 | không xảy ra: build được trên 1.87. Cần feature `runtime_shaders` vì máy chưa có Metal Toolchain |
 | Popup lệch vị trí ở terminal có padding/tab bar | P2 | offset theo bundle id trong config; ưu tiên `ws_xpixel/ws_ypixel` của TIOCGWINSZ; P6 thêm caret AX |
 | Popup chớp hoặc trễ khi dời liên tục | P2 | spike đo trước; chỉ gửi Show khi nội dung hoặc vị trí đổi |
 | Edit buffer sai với prompt nhiều dòng, RPROMPT, zsh-autosuggestions | P1 | lọc ô màu autosuggestion (cách của Q), test với oh-my-zsh, starship, p10k |
