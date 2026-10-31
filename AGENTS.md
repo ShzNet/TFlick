@@ -20,7 +20,7 @@ crates/tflick-ui/src/    main (khởi động) · controller (vòng poll, nơi d
                          follow, layout (logic thuần, có test) · view (giao diện gpui)
                          ipc (socket) · macos/{window,ax} (glue hệ điều hành, unsafe)
 crates/tflick-ipc/       kiểu message dùng chung
-shell/                   tflick.zsh/.bash/.fish, nhúng bằng include_str!
+shell/                   tflick.zsh/.bash/.fish (+ bash-preexec.sh), nhúng bằng include_str!, tự nạp khi chạy tflick
 specs/                   spec JS đã compile (sinh ra, không commit)
 plans/                   plan theo phase
 refs/                    repo tham khảo, CHỈ ĐỌC, không sửa, không build

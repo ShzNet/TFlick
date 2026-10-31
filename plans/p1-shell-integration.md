@@ -26,7 +26,8 @@
 1. **Shell scripts (`shell/`)**
    - `tflick.zsh`: port `post.zsh` (bỏ `pre-cmd --alias` và `DoneSourcing`), đổi tên hàm sang tiền tố `tflick_`, vẫn giữ mã OSC 697 (không có lý do để đổi).
    - ~~Người dùng thêm `eval "$(tflick init zsh)"` vào `.zshrc`~~ → `tflick` tự nạp qua `ZDOTDIR` (`crates/tflick/src/integration.rs`); `tflick init zsh` vẫn in script.
-   - bash/fish để sang P6.
+   - bash (`shell/tflick.bash` + `bash-preexec.sh` vendored, MIT) và fish (`shell/tflick.fish`) làm luôn, không đợi P6. Tự nạp: bash `--rcfile` (đọc `~/.bashrc` rồi script), fish `-C`. Shell khác: đoán từ phím.
+   - Bash đã thử trên bash 3.2 của macOS qua pty. **Lỗi của Q tránh được:** `post.bash` gọi `__bp_install_after_session_init` lần nữa sau khi bash-preexec đã tự cài, chuỗi cài bị lặp và lần hai xoá trap DEBUG → `PreExec` chỉ phát ở prompt sau. Fish chưa thử (máy chưa cài fish).
 2. **Quét OSC 697**
    - Chạy `vte::Parser` song song trên luồng output, chỉ quan tâm `osc_dispatch` có tham số `697`.
    - Cắt output thành từng đoạn tại ranh giới mỗi OSC 697. Mỗi đoạn được đưa vào `Term` trước, rồi mới xử lý OSC, để vị trí cursor đọc được là đúng lúc OSC xuất hiện.

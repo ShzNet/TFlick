@@ -238,6 +238,7 @@ impl ShellState {
             Event::PreExec => self.running = true,
             Event::Dir(dir) => self.cwd = Some(dir),
             Event::AutosuggestStyle(style) => self.autosuggest = Style::parse(&style),
+            Event::FishSuggestionColor(color) => self.autosuggest = Style::parse_fish(&color),
             Event::Other => {}
         }
     }

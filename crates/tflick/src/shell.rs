@@ -16,6 +16,8 @@ pub enum Event {
     Dir(String),
     /// `ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE`, e.g. `fg=8`.
     AutosuggestStyle(String),
+    /// `fish_color_autosuggestion`, e.g. `brblack` or `555 --bold`.
+    FishSuggestionColor(String),
     /// Known but unused for now (Shell, PID, ExitCode…), or unknown.
     Other,
 }
@@ -31,6 +33,7 @@ pub fn parse(payload: &str) -> Event {
         Some(("NewCmd", id)) => Event::NewCmd(id.into()),
         Some(("Dir", dir)) => Event::Dir(dir.into()),
         Some(("ZshAutosuggestionColor", style)) => Event::AutosuggestStyle(style.into()),
+        Some(("FishSuggestionColor", color)) => Event::FishSuggestionColor(color.into()),
         Some(_) => Event::Other,
     }
 }
@@ -55,6 +58,30 @@ impl Style {
             }
         }
         (style != Self::default()).then_some(style)
+    }
+
+    /// fish color syntax: a name (`brblack`), or hex RGB (`555`, `8a8a8a`), plus `--options`
+    /// (`--background=…` is ignored).
+    /// ponytail: a hex color matches only if fish prints it as true color; on terminals where it
+    /// falls back to the 256-color palette the suggestion is read as typed text.
+    pub fn parse_fish(s: &str) -> Option<Self> {
+        let color = s.split_whitespace().find(|w| !w.starts_with('-'))?;
+        let fg = match color.strip_prefix("br") {
+            Some(name) => parse_color(name).and_then(|c| match c {
+                Color::Indexed(i) if i < 8 => Some(Color::Indexed(i + 8)),
+                _ => None,
+            }),
+            None if color.len() == 3 && color.chars().all(|c| c.is_ascii_hexdigit()) => {
+                let double: String = color.chars().flat_map(|c| [c, c]).collect();
+                parse_color(&format!("#{double}"))
+            }
+            None if color.len() == 6 => parse_color(&format!("#{color}")),
+            None => parse_color(color),
+        };
+        fg.map(|fg| Self {
+            fg: Some(fg),
+            bg: None,
+        })
     }
 
     pub fn matches(&self, fg: Color, bg: Color) -> bool {
@@ -114,5 +141,23 @@ mod tests {
         assert!(!s.matches(Color::Named(NamedColor::Foreground), bg));
         assert!(Style::parse("fg=#ff0080").is_some());
         assert_eq!(Style::parse(""), None);
+    }
+
+    #[test]
+    fn fish_suggestion_colors() {
+        let bg = Color::Named(NamedColor::Background);
+        let s = Style::parse_fish("brblack").unwrap();
+        assert!(s.matches(Color::Named(NamedColor::BrightBlack), bg));
+        let s = Style::parse_fish("555 --bold").unwrap();
+        assert!(s.matches(
+            Color::Spec(Rgb {
+                r: 0x55,
+                g: 0x55,
+                b: 0x55
+            }),
+            bg
+        ));
+        assert!(Style::parse_fish("8a8a8a").is_some());
+        assert_eq!(Style::parse_fish("normal"), None);
     }
 }

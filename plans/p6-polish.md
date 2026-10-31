@@ -11,7 +11,7 @@
    - `tflick install`: thêm `eval "$(tflick init zsh)"` vào `.zshrc` (backup trước khi sửa), tạo LaunchAgent `~/Library/LaunchAgents/dev.tflick.ui.plist` cho `tflick-ui`, hướng dẫn cấp quyền Accessibility.
    - `tflick uninstall` gỡ sạch.
    - `tflick doctor`: kiểm tra shell integration, socket, quyền AX, spec.
-3. **bash + fish**
+3. ✅ **bash + fish** (làm sớm ở P1, xem `p1-shell-integration.md`; fish chưa thử tay)
    - Port `post.bash` + `bash-preexec.sh`, `pre.fish` + `post.fish`; `tflick init bash|fish`.
 4. **Caret chính xác qua Accessibility**
    - Port `macos-utils/src/caret_position.rs` (`get_caret_position`) cho Terminal.app.

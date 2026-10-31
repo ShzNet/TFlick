@@ -6,8 +6,8 @@
 //! `osc` (OSC 697 splitting) and `shell` (its events); `cpr` parses cursor reports;
 //! `ui_client` talks to `tflick-ui`.
 //!
-//! The zsh integration loads by itself (`integration`); `tflick init zsh` also prints it, for
-//! `eval "$(tflick init zsh)"` in .zshrc.
+//! The zsh/bash/fish integration loads by itself (`integration`); `tflick init <shell>` also
+//! prints it, to load from an rc file instead.
 
 mod cpr;
 mod integration;
@@ -35,13 +35,12 @@ fn main() -> Result<()> {
     let args: Vec<_> = env::args_os().skip(1).collect();
 
     if args.first().is_some_and(|a| a == "init") {
-        return match args.get(1).and_then(|s| s.to_str()) {
-            Some("zsh") => {
-                print!("{}", integration::ZSH_SCRIPT);
-                Ok(())
-            }
-            other => anyhow::bail!("tflick init: unsupported shell {other:?} (only zsh for now)"),
+        let shell = args.get(1).and_then(|s| s.to_str()).unwrap_or_default();
+        let Some(script) = integration::script(shell) else {
+            anyhow::bail!("tflick init: unsupported shell {shell:?} (zsh, bash or fish)");
         };
+        print!("{script}");
+        return Ok(());
     }
 
     // Already inside tflick: become the shell instead of nesting a second PTY. Compare ttys, not
@@ -62,7 +61,6 @@ fn main() -> Result<()> {
     let pair = native_pty_system().openpty(tty::size())?;
 
     let mut cmd = CommandBuilder::new(&shell);
-    cmd.args(&args);
     // portable-pty defaults cwd to $HOME, keep the caller's directory instead.
     cmd.cwd(env::current_dir()?);
     cmd.env("TFLICK", "1");
@@ -72,7 +70,13 @@ fn main() -> Result<()> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let session = format!("{}-{nanos}", process::id());
     cmd.env("TFLICK_SESSION_ID", &session);
-    let injected = integration::inject(&mut cmd, &shell, &session)?;
+    // With arguments (`tflick -c cmd`) the shell isn't interactive: nothing to integrate.
+    let injected = if args.is_empty() {
+        integration::inject(&mut cmd, &shell, &session)?
+    } else {
+        None
+    };
+    cmd.args(&args);
 
     let raw = tty::RawMode::enable()?;
     // Ask the real terminal where its cursor is (DSR). Must happen before the stdin thread starts
