@@ -15,7 +15,7 @@ TFlick: terminal autocomplete kiểu Fig / Amazon Q, viết bằng Rust, ưu ti�
 crates/tflick/src/       main (nối thread) · tty (terminal thật, raw mode, unsafe)
                          popup (quyết định hiện gì) · screen (model màn hình + edit buffer)
                          osc (tách OSC 697) · shell (sự kiện OSC 697) · cpr (báo cáo con trỏ)
-                         ui_client (socket)
+                         ui_client (socket) · integration (tự nạp script shell qua ZDOTDIR)
 crates/tflick-ui/src/    main (khởi động) · controller (vòng poll, nơi duy nhất ghép IPC + AX + cửa sổ)
                          follow, layout (logic thuần, có test) · view (giao diện gpui)
                          ipc (socket) · macos/{window,ax} (glue hệ điều hành, unsafe)

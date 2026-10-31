@@ -9,6 +9,7 @@
 - **RPROMPT/PS2:** Q gắn cờ `IN_PROMPT` vào từng ô. Ta chụp lại các ô prompt vẽ sau `NewCmd` (vị trí + ký tự) và bỏ những ô còn giữ nguyên ký tự đó.
 - **Wrap:** nối dòng theo cờ `WRAPLINE` (giữ được dấu cách đúng ở chỗ wrap), Q thì luôn bỏ khoảng trắng cuối dòng.
 - Bỏ `OSCLock/OSCUnlock`, `pre-cmd --alias`, `DoneSourcing`; script chỉ chạy khi `TFLICK_TTY` trùng `$TTY`.
+- **Tự nạp, không sửa `.zshrc`** (cách của kitty/VSCode): `tflick` đặt `ZDOTDIR` sang thư mục tạm có `.zshenv` trả lại `ZDOTDIR` gốc, chạy `.zshenv` thật, rồi nạp script ở prompt đầu tiên (sau `.zshrc`). `TFLICK_NO_INJECT=1` để tắt. `tflick init zsh` vẫn còn cho ai muốn tự `eval`. Đã thử với oh-my-zsh thật qua pty.
 - Có tích hợp: popup hiện khi edit buffer có chữ. Chưa có (chưa `eval`): vẫn đoán từ phím như trước.
 
 ## Cách Q làm (đã đọc code)
@@ -24,7 +25,7 @@
 ## Việc cần làm
 1. **Shell scripts (`shell/`)**
    - `tflick.zsh`: port `post.zsh` (bỏ `pre-cmd --alias` và `DoneSourcing`), đổi tên hàm sang tiền tố `tflick_`, vẫn giữ mã OSC 697 (không có lý do để đổi).
-   - Lệnh `tflick init zsh` in script ra stdout (`include_str!`), người dùng thêm `eval "$(tflick init zsh)"` vào cuối `.zshrc`.
+   - ~~Người dùng thêm `eval "$(tflick init zsh)"` vào `.zshrc`~~ → `tflick` tự nạp qua `ZDOTDIR` (`crates/tflick/src/integration.rs`); `tflick init zsh` vẫn in script.
    - bash/fish để sang P6.
 2. **Quét OSC 697**
    - Chạy `vte::Parser` song song trên luồng output, chỉ quan tâm `osc_dispatch` có tham số `697`.

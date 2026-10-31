@@ -6,9 +6,11 @@
 //! `osc` (OSC 697 splitting) and `shell` (its events); `cpr` parses cursor reports;
 //! `ui_client` talks to `tflick-ui`.
 //!
-//! `tflick init zsh` prints the shell integration, for `eval "$(tflick init zsh)"` in .zshrc.
+//! The zsh integration loads by itself (`integration`); `tflick init zsh` also prints it, for
+//! `eval "$(tflick init zsh)"` in .zshrc.
 
 mod cpr;
+mod integration;
 mod osc;
 mod popup;
 mod screen;
@@ -35,7 +37,7 @@ fn main() -> Result<()> {
     if args.first().is_some_and(|a| a == "init") {
         return match args.get(1).and_then(|s| s.to_str()) {
             Some("zsh") => {
-                print!("{}", include_str!("../../../shell/tflick.zsh"));
+                print!("{}", integration::ZSH_SCRIPT);
                 Ok(())
             }
             other => anyhow::bail!("tflick init: unsupported shell {other:?} (only zsh for now)"),
@@ -70,6 +72,7 @@ fn main() -> Result<()> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let session = format!("{}-{nanos}", process::id());
     cmd.env("TFLICK_SESSION_ID", &session);
+    let injected = integration::inject(&mut cmd, &shell, &session)?;
 
     let raw = tty::RawMode::enable()?;
     // Ask the real terminal where its cursor is (DSR). Must happen before the stdin thread starts
@@ -150,5 +153,8 @@ fn main() -> Result<()> {
     let _ = done_rx.recv_timeout(Duration::from_millis(200));
 
     drop(raw);
+    if let Some(dir) = injected {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     process::exit(status.exit_code() as i32);
 }
