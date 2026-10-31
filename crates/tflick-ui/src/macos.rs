@@ -130,6 +130,7 @@ fn primary_screen_height() -> f64 {
 }
 
 /// Where the user is typing, as precisely as we can tell.
+#[derive(Debug)]
 pub enum Anchor {
     /// The cursor cell itself (xterm.js terminals: VSCode, Cursor, Hyper…).
     Caret(Rect),

@@ -69,6 +69,15 @@ impl AssetSource for Assets {
     }
 }
 
+/// Positioning diagnostics on stderr: `TFLICK_DEBUG=1 cargo run -p tflick-ui`.
+macro_rules! debug {
+    ($($arg:tt)*) => {
+        if std::env::var_os("TFLICK_DEBUG").is_some() {
+            eprintln!("tflick-ui: {}", format_args!($($arg)*));
+        }
+    };
+}
+
 /// Tuning knobs, overridable without rebuilding: `TFLICK_BLUR=60 TFLICK_TINT=230`.
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key)
@@ -188,14 +197,24 @@ impl Popup {
                             grid,
                             cell_px,
                         } => {
-                            let caret = match macos::locate_terminal() {
+                            let anchor = macos::locate_terminal();
+                            let caret = match anchor {
                                 Some(Anchor::Caret(caret)) => caret,
                                 Some(Anchor::Window(win)) => {
                                     caret_in_window(win, cursor, grid, cell_px)
                                 }
-                                None => continue,
+                                None => {
+                                    debug!("no terminal window found (Accessibility allowed?)");
+                                    continue;
+                                }
                             };
-                            let (x, y) = popup_origin(caret, &macos::screens());
+                            let screens = macos::screens();
+                            let (x, y) = popup_origin(caret, &screens);
+                            debug!(
+                                "anchor={anchor:?} cursor={cursor:?} grid={grid:?} \
+                                 cell_px={cell_px:?} caret={caret:?} popup=({x}, {y}) \
+                                 screens={screens:?}"
+                            );
                             macos::show_at(&ns_window, x, y);
                             shown = Some(session);
                             update = Some((items, selected));
