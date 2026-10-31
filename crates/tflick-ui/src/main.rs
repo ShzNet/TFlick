@@ -9,7 +9,8 @@ use gpui::{
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, point, prelude::*,
     px, rgba, size,
 };
-use objc2_app_kit::{NSEvent, NSView};
+use objc2::rc::Retained;
+use objc2_app_kit::{NSEvent, NSView, NSWindow};
 use objc2_foundation::NSPoint;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -36,69 +37,62 @@ struct Popup {
     last_scale: f32,
 }
 
-/// Moves the window so its top-left corner sits just below-right of the mouse, and shows or
-/// hides it (orderOut/orderFront, like the real popup will on Show/Hide).
+/// The NSWindow behind a gpui window.
 /// ponytail: gpui 0.2.2 has no public move API, so we reach the NSWindow through the raw
 /// handle. Drop this once gpui exposes `set_position`.
-fn follow_mouse(window: &Window, visible: bool) {
+fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     // gpui::Window has an inherent `window_handle()` too, so call the trait explicitly.
-    let Ok(handle) = HasWindowHandle::window_handle(window) else {
-        return;
-    };
+    let handle = HasWindowHandle::window_handle(window).ok()?;
     let RawWindowHandle::AppKit(h) = handle.as_raw() else {
-        return;
+        return None;
     };
-    // SAFETY: gpui hands out a valid NSView pointer for the lifetime of the window, and we are
-    // on the main thread (gpui runs all window callbacks there).
-    unsafe {
-        let view: &NSView = h.ns_view.cast().as_ref();
-        let Some(ns_window) = view.window() else {
-            return;
-        };
-        // Both values are in Cocoa coordinates (origin bottom-left), so no flipping needed here.
-        let mouse = NSEvent::mouseLocation();
-        let old_scale = ns_window.backingScaleFactor();
-        ns_window.setFrameTopLeftPoint(NSPoint::new(mouse.x + 12.0, mouse.y - 18.0));
-        // Moving to a screen with another scale (Retina 2x <-> external 1x): AppKit tells gpui
-        // a beat late, so the next frame would render at the old scale (text 2x too big).
-        // Notify gpui right away so it updates its scale before drawing.
-        if ns_window.backingScaleFactor() != old_scale {
-            view.viewDidChangeBackingProperties();
-        }
-        if !visible {
-            ns_window.orderOut(None);
-        } else if !ns_window.isVisible() {
-            ns_window.orderFrontRegardless();
-        }
+    // SAFETY: gpui hands out a valid NSView pointer for the lifetime of the window.
+    let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
+    view.window()
+}
+
+/// Moves the popup just below-right of the mouse and shows or hides it.
+///
+/// Must run OUTSIDE any gpui `update`: moving to a screen with another scale makes AppKit call
+/// gpui's resize callback synchronously, and that callback fails while the window is borrowed
+/// by an update, leaving gpui's scale factor stale (content drawn at half or double size).
+fn follow_mouse(ns_window: &NSWindow, visible: bool) {
+    // Both values are in Cocoa coordinates (origin bottom-left), so no flipping needed here.
+    let mouse = NSEvent::mouseLocation();
+    ns_window.setFrameTopLeftPoint(NSPoint::new(mouse.x + 12.0, mouse.y - 18.0));
+    if !visible {
+        ns_window.orderOut(None);
+    } else if !ns_window.isVisible() {
+        ns_window.orderFrontRegardless();
     }
 }
 
 impl Popup {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let ns_window = ns_window(window).expect("gpui window has an NSWindow");
         cx.spawn_in(window, async move |this, cx| {
+            let mut tick = 0usize;
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(50))
                     .await;
+                tick += 1;
+                let start = Instant::now();
+                // This async task runs on the main thread, between gpui updates.
+                // Visible 3s, hidden 0.5s, to check for flicker on re-show.
+                follow_mouse(&ns_window, tick % 70 < 60);
                 let ok = this.update_in(cx, |this, window, cx| {
-                    let start = Instant::now();
-                    this.tick += 1;
-                    // Visible 3s, hidden 0.5s, to check for flicker on re-show.
-                    follow_mouse(window, this.tick % 70 < 60);
+                    this.tick = tick;
                     cx.notify();
                     this.max_frame = this.max_frame.max(start.elapsed());
                     // Log scale changes (moving between Retina and 1x screens).
                     let sf = window.scale_factor();
                     if sf != this.last_scale {
-                        eprintln!(
-                            "tick {} scale {sf} bounds {:?}",
-                            this.tick,
-                            window.bounds().origin
-                        );
+                        eprintln!("tick {tick} scale {sf} bounds {:?}", window.bounds().origin);
                         this.last_scale = sf;
                     }
-                    if this.tick % 100 == 0 {
-                        eprintln!("tick {} max update {:?}", this.tick, this.max_frame);
+                    if tick % 100 == 0 {
+                        eprintln!("tick {tick} max update {:?}", this.max_frame);
                         this.max_frame = Duration::ZERO;
                     }
                 });
