@@ -27,7 +27,8 @@
 ## Kiểm tra (Definition of Done)
 - [ ] `vim`, `htop`, `less`, `ssh`, `tmux` chạy bình thường bên trong, kể cả khi resize cửa sổ.
 - [ ] Ctrl-C, Ctrl-Z, Ctrl-D hoạt động đúng.
-- [x] `exit 3` thì shell ngoài nhận exit code 3; cwd giữ nguyên; `TFLICK=1` thì không bọc lồng (thử qua `script`, không phải terminal thật).
+- [x] `exit 3` thì shell ngoài nhận exit code 3; cwd giữ nguyên (thử qua `script`, không phải terminal thật).
+- [x] Chống lồng theo **tty** (`TFLICK_TTY`), không chỉ theo biến `TFLICK`: biến này rò sang mọi thứ mở từ shell tflick (vd. `code .`) và từng làm tflick im lặng không chạy. Chạy lồng thì in cảnh báo.
 - [ ] `cat /dev/urandom | head -c 50M | base64` không treo hay rơi byte (so độ trễ với khi không bọc).
 - [ ] Kill -9 `tflick` xong, `reset` là terminal về bình thường (chấp nhận được).
 

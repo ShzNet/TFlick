@@ -149,21 +149,66 @@ fn listen() -> Receiver<ToUi> {
         for conn in listener.incoming().flatten() {
             let tx = tx.clone();
             thread::spawn(move || {
+                let mut session = None;
                 for line in BufReader::new(conn).lines() {
                     let Ok(line) = line else { break };
-                    match serde_json::from_str(&line) {
+                    match serde_json::from_str::<ToUi>(&line) {
                         Ok(msg) => {
+                            let (ToUi::Show { session: s, .. } | ToUi::Hide { session: s }) = &msg;
+                            session = Some(s.clone());
                             if tx.send(msg).is_err() {
-                                break;
+                                return;
                             }
                         }
                         Err(e) => eprintln!("tflick-ui: bad message: {e}"),
                     }
                 }
+                // The shell's tflick exited (terminal tab or window closed, or a crash).
+                if let Some(session) = session {
+                    let _ = tx.send(ToUi::Hide { session });
+                }
             });
         }
     });
     rx
+}
+
+/// Where the popup should be: the terminal app and the cursor cell it reported.
+struct Target {
+    pid: i32,
+    cursor: (u16, u16),
+    grid: (u16, u16),
+    cell_px: Option<(f32, f32)>,
+}
+
+impl Target {
+    /// Popup top-left in global top-left coordinates, or None if the terminal's window is gone.
+    fn place(&self) -> Option<(f64, f64)> {
+        let anchor = macos::locate_terminal(self.pid);
+        let caret = match anchor {
+            Some(Anchor::Caret(caret)) => caret,
+            Some(Anchor::Window(win)) => caret_in_window(win, self.cursor, self.grid, self.cell_px),
+            None => {
+                debug!("no terminal window found (Accessibility allowed?)");
+                return None;
+            }
+        };
+        let screens = macos::screens();
+        let at = popup_origin(caret, &screens);
+        debug!(
+            "anchor={anchor:?} cursor={:?} grid={:?} cell_px={:?} caret={caret:?} popup={at:?}",
+            self.cursor, self.grid, self.cell_px
+        );
+        Some(at)
+    }
+}
+
+/// What is on screen, kept to follow the terminal window and hide at the right time.
+struct Shown {
+    /// Hide from another shell must not close it.
+    session: String,
+    target: Target,
+    at: (f64, f64),
 }
 
 struct Popup {
@@ -179,13 +224,14 @@ impl Popup {
         macos::set_blur(&ns_window, env_or("TFLICK_BLUR", 30));
         macos::hide(&ns_window);
         cx.spawn_in(window, async move |this, cx| {
-            // Session currently shown; Hide from another shell must not close it.
-            let mut shown: Option<String> = None;
+            let mut shown: Option<Shown> = None;
+            let mut tick = 0u32;
             loop {
                 // ponytail: polls every 16ms; switch to an async channel if idle CPU matters.
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
+                tick = tick.wrapping_add(1);
                 let mut update = None;
                 // Window moves happen here, OUTSIDE gpui updates (see macos::show_at).
                 for msg in rx.try_iter() {
@@ -198,30 +244,49 @@ impl Popup {
                             grid,
                             cell_px,
                         } => {
-                            let anchor = macos::locate_terminal();
-                            let caret = match anchor {
-                                Some(Anchor::Caret(caret)) => caret,
-                                Some(Anchor::Window(win)) => {
-                                    caret_in_window(win, cursor, grid, cell_px)
-                                }
-                                None => {
-                                    debug!("no terminal window found (Accessibility allowed?)");
-                                    continue;
-                                }
+                            let Some(pid) = macos::frontmost_pid() else {
+                                continue;
                             };
-                            let screens = macos::screens();
-                            let (x, y) = popup_origin(caret, &screens);
-                            debug!(
-                                "anchor={anchor:?} cursor={cursor:?} grid={grid:?} \
-                                 cell_px={cell_px:?} caret={caret:?} popup=({x}, {y}) \
-                                 screens={screens:?}"
-                            );
-                            macos::show_at(&ns_window, x, y);
-                            shown = Some(session);
+                            let target = Target {
+                                pid,
+                                cursor,
+                                grid,
+                                cell_px,
+                            };
+                            let Some(at) = target.place() else {
+                                continue;
+                            };
+                            macos::show_at(&ns_window, at.0, at.1);
+                            shown = Some(Shown {
+                                session,
+                                target,
+                                at,
+                            });
                             update = Some((items, selected));
                         }
                         ToUi::Hide { session } => {
-                            if shown.as_ref() == Some(&session) {
+                            if shown.as_ref().is_some_and(|s| s.session == session) {
+                                macos::hide(&ns_window);
+                                shown = None;
+                            }
+                        }
+                    }
+                }
+                if let Some(s) = &mut shown {
+                    if macos::frontmost_pid() != Some(s.target.pid) {
+                        // Switched app, or the terminal quit: the popup belongs to it.
+                        macos::hide(&ns_window);
+                        shown = None;
+                    } else if tick.is_multiple_of(3) {
+                        // Follow the terminal window while it is dragged or resized (~20Hz).
+                        match s.target.place() {
+                            Some(at) if at != s.at => {
+                                macos::show_at(&ns_window, at.0, at.1);
+                                s.at = at;
+                            }
+                            Some(_) => {}
+                            None => {
+                                // Its window closed (or lost focus inside the app).
                                 macos::hide(&ns_window);
                                 shown = None;
                             }

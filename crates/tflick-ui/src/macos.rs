@@ -137,11 +137,17 @@ pub enum Anchor {
     Window(Rect),
 }
 
-/// Locates the terminal the user is typing in (the frontmost app).
-pub fn locate_terminal() -> Option<Anchor> {
-    let pid = NSWorkspace::sharedWorkspace()
-        .frontmostApplication()?
-        .processIdentifier();
+/// Pid of the app the user is working in.
+pub fn frontmost_pid() -> Option<i32> {
+    Some(
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()?
+            .processIdentifier(),
+    )
+}
+
+/// Locates the terminal the user is typing in: the frontmost app, `pid`.
+pub fn locate_terminal(pid: i32) -> Option<Anchor> {
     // SAFETY: every Copy/Create result is released exactly once below.
     unsafe {
         let app = AXUIElementCreateApplication(pid);

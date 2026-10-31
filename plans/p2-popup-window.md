@@ -47,8 +47,8 @@
 - ⬜ `tflick` tự spawn `tflick-ui` nếu không kết nối được (hiện tại: không có UI thì `tflick` lặng lẽ bỏ qua); sau này launchd sẽ lo việc này (P6).
 
 ### 2c. Định vị: cách mặc định 🟡
-Đã làm: `macos::focused_window_frame` (AX) + `popup_origin` (logic thuần, 3 unit test). Khác plan: **chưa có config offset theo terminal**; thay vào đó tự suy ra lề: coi lưới chữ nằm giữa theo chiều ngang, sát đáy với lề bằng lề hai bên, phần dư phía trên là titlebar + tab bar. `cell_px` báo theo device pixel thì tự chia cho scale. Chưa lọc theo danh sách terminal được hỗ trợ.
-Phía `tflick` (tạm, trước P1): đưa output vào `alacritty_terminal::Term` để lấy vị trí con trỏ; coi là "đang gõ lệnh" khi có phím in được, tắt khi Enter/Ctrl-C/Ctrl-D/Esc; không bao giờ hiện khi ở alternate screen (vim, less). Danh sách gợi ý vẫn là dữ liệu giả.
+Đã làm: `macos::locate_terminal` (AX) + `caret_in_window` + `popup_origin` (logic thuần, 4 unit test). **Terminal xterm.js (VSCode…):** khung cửa sổ là cả cửa sổ editor nên vô dụng; dùng khung của `xterm-helper-textarea` (phần tử đang focus, nằm đúng ô con trỏ) làm caret, sau khi bật `AXManualAccessibility` (gửi lại mỗi lần chưa tìm thấy, vì Electron dựng cây AX bất đồng bộ). `examples/ax_probe.rs` để dò cây AX khi cần. Khác plan: **chưa có config offset theo terminal**; thay vào đó tự suy ra lề: coi lưới chữ nằm giữa theo chiều ngang, sát đáy với lề bằng lề hai bên, phần dư phía trên là titlebar + tab bar. `cell_px` báo theo device pixel thì tự chia cho scale. Chưa lọc theo danh sách terminal được hỗ trợ.
+Phía `tflick` (tạm, trước P1): vị trí con trỏ lấy **từ chính terminal**: sau mỗi đoạn output hỏi `ESC[6n`, terminal trả `ESC[row;colR` trên stdin và `tflick` lọc nó ra trước khi tới shell (chỉ lọc khi đang chờ trả lời, để Shift+F3 vẫn tới shell). Mô hình `alacritty_terminal::Term` bị lệch với màn hình thật (nội dung có trước khi `tflick` chạy, reflow khi resize, `clear`) nên chỉ còn là dự phòng khi terminal không trả lời, và để biết alternate screen; coi là "đang gõ lệnh" khi có phím in được, tắt khi Enter/Ctrl-C/Ctrl-D/Esc; không bao giờ hiện khi ở alternate screen (vim, less). Danh sách gợi ý vẫn là dữ liệu giả.
 1. App đang focus: `NSWorkspace.frontmostApplication` → pid, bundle id. Chỉ hiện popup khi đó là terminal nằm trong danh sách hỗ trợ (iTerm2, Terminal.app, Ghostty, WezTerm, kitty, Alacritty, VSCode).
 2. Khung cửa sổ: `AXUIElementCreateApplication(pid)` → `AXFocusedWindow` → `AXPosition` + `AXSize`.
 3. Kích thước ô chữ:
@@ -64,7 +64,8 @@ Phía `tflick` (tạm, trước P1): đưa output vào `alacritty_terminal::Term
 5. Toạ độ popup = gốc + (col, row + 1) × cell. Nếu tràn xuống đáy màn hình thì lật popup lên phía trên dòng hiện tại; tràn sang phải thì dịch sang trái.
 6. ✅ Cần quyền Accessibility: kiểm tra bằng `AXIsProcessTrustedWithOptions` (prompt = true) khi khởi động, nếu chưa có thì in hướng dẫn.
 
-### 2d. Ẩn popup ⬜ (mới có: ẩn khi nhận `Hide`)
+### 2d. Ẩn popup / đi theo cửa sổ 🟡
+Đã làm (chờ thử tay): ẩn khi app phía trước đổi (focus out, đóng terminal); ẩn khi kết nối của `tflick` đóng (đóng tab/cửa sổ, crash); khi đang hiện, cứ ~50ms hỏi lại AX và dời popup theo cửa sổ terminal đang bị kéo hoặc resize; cửa sổ biến mất thì ẩn.
 - Terminal mất focus (theo dõi notification `NSWorkspaceDidActivateApplication`), cửa sổ di chuyển hoặc resize, hoặc nhận `Hide`.
 
 ## Kiểm tra
@@ -73,7 +74,9 @@ Phía `tflick` (tạm, trước P1): đưa output vào `alacritty_terminal::Term
 - [ ] Gõ ở dòng cuối màn hình: popup lật lên trên.
 - [x] Spike: chuyển giữa màn Retina và màn 1x không còn vẽ sai tỉ lệ.
 - [ ] Hai màn hình, màn hình Retina và thường: toạ độ vẫn đúng (chú ý gốc toạ độ của AX ở góc trên trái, của Cocoa ở góc dưới trái).
-- [ ] Chuyển sang app khác: popup ẩn trong vòng 100ms.
+- [ ] Chuyển sang app khác: popup ẩn trong vòng 100ms (đã code, chờ thử tay).
+- [ ] Kéo cửa sổ terminal: popup đi theo (đã code, chờ thử tay).
+- [ ] Đóng tab/cửa sổ terminal: popup ẩn (đã code, chờ thử tay).
 - [x] Theme sáng/tối theo hệ thống.
 
 ## Ngoài phạm vi
