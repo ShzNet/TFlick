@@ -8,7 +8,8 @@ use std::ffi::c_void;
 
 use accessibility_sys::{
     AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-    AXUIElementRef, AXUIElementSetAttributeValue, AXValueGetValue, AXValueRef, kAXErrorSuccess,
+    AXUIElementCreateSystemWide, AXUIElementGetPid, AXUIElementRef, AXUIElementSetAttributeValue,
+    AXValueGetValue, AXValueRef, kAXErrorSuccess, kAXFocusedApplicationAttribute,
     kAXFocusedUIElementAttribute, kAXFocusedWindowAttribute, kAXPositionAttribute,
     kAXSizeAttribute, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint, kAXValueTypeCGSize,
 };
@@ -20,9 +21,7 @@ use core_foundation::string::CFString;
 use gpui::Window;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSScreen, NSView, NSWindow, NSWorkspace,
-};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen, NSView, NSWindow};
 use objc2_foundation::NSPoint;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -137,23 +136,44 @@ pub enum Anchor {
     Window(Rect),
 }
 
-/// Pid of the app the user is working in.
-pub fn frontmost_pid() -> Option<i32> {
-    Some(
-        NSWorkspace::sharedWorkspace()
-            .frontmostApplication()?
-            .processIdentifier(),
-    )
+/// The terminal's focused window and where the user types in it.
+pub struct Located {
+    pub anchor: Anchor,
+    /// The focused AX window element, to notice a switch to another window of the same app
+    /// (compared with CFEqual).
+    pub window: CFType,
+    /// Its frame: a change means the window is being dragged or resized.
+    pub frame: Rect,
 }
 
-/// Locates the terminal the user is typing in: the frontmost app, `pid`.
-pub fn locate_terminal(pid: i32) -> Option<Anchor> {
-    // SAFETY: every Copy/Create result is released exactly once below.
+/// Pid of the app that has keyboard focus, asked live from Accessibility.
+/// (`NSWorkspace.frontmostApplication` is a cache updated by notifications and can lag.)
+pub fn focused_app_pid() -> Option<i32> {
+    // SAFETY: the system-wide element and the copied app element are released exactly once.
+    unsafe {
+        let system = AXUIElementCreateSystemWide();
+        let app = copy_attr(system, kAXFocusedApplicationAttribute);
+        CFRelease(system as CFTypeRef);
+        let app = app?;
+        let mut pid = 0;
+        let err = AXUIElementGetPid(app as AXUIElementRef, &mut pid);
+        CFRelease(app);
+        (err == kAXErrorSuccess).then_some(pid)
+    }
+}
+
+/// Locates the terminal the user is typing in, app `pid`. With `wake_electron`, (re)asks
+/// Electron apps to expose their AX tree when no xterm.js caret is found; only needed while
+/// typing, not on every follow-up poll.
+pub fn locate_terminal(pid: i32, wake_electron: bool) -> Option<Located> {
+    // SAFETY: every Copy/Create result is released exactly once, or owned by a CFType.
     unsafe {
         let app = AXUIElementCreateApplication(pid);
+        let window =
+            copy_attr(app, kAXFocusedWindowAttribute).map(|w| CFType::wrap_under_create_rule(w));
         let caret = copy_attr(app, kAXFocusedUIElementAttribute).and_then(|el| {
             let caret = xterm_caret(el as AXUIElementRef);
-            if caret.is_none() {
+            if caret.is_none() && wake_electron {
                 debug!(
                     "focused element is not an xterm.js caret: {}",
                     describe(el as _)
@@ -162,29 +182,29 @@ pub fn locate_terminal(pid: i32) -> Option<Anchor> {
             CFRelease(el);
             caret
         });
-        let anchor = match caret {
-            Some(c) => Some(Anchor::Caret(c)),
-            None => {
-                // Electron apps (VSCode…) only expose their AX tree once asked, and build it
-                // asynchronously, so ask again on every miss: the next keystroke will find it.
-                // Harmless (an error code) for non-Electron apps.
-                let attr = CFString::from_static_string("AXManualAccessibility");
-                AXUIElementSetAttributeValue(
-                    app,
-                    attr.as_concrete_TypeRef(),
-                    CFBoolean::true_value().as_CFTypeRef(),
-                );
-                copy_attr(app, kAXFocusedWindowAttribute)
-                    .and_then(|w| {
-                        let r = frame(w as AXUIElementRef);
-                        CFRelease(w);
-                        r
-                    })
-                    .map(Anchor::Window)
-            }
-        };
+        if caret.is_none() && wake_electron {
+            // Electron apps (VSCode…) only expose their AX tree once asked, and build it
+            // asynchronously, so ask again on every miss: the next keystroke will find it.
+            // Harmless (an error code) for non-Electron apps.
+            let attr = CFString::from_static_string("AXManualAccessibility");
+            AXUIElementSetAttributeValue(
+                app,
+                attr.as_concrete_TypeRef(),
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
+        }
         CFRelease(app as CFTypeRef);
-        anchor
+        let window = window?;
+        let window_frame = frame(window.as_CFTypeRef() as AXUIElementRef)?;
+        let anchor = match caret {
+            Some(c) => Anchor::Caret(c),
+            None => Anchor::Window(window_frame),
+        };
+        Some(Located {
+            anchor,
+            window,
+            frame: window_frame,
+        })
     }
 }
 

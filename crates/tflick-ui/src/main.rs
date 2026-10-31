@@ -181,25 +181,41 @@ struct Target {
     cell_px: Option<(f32, f32)>,
 }
 
+/// A computed popup position and what it was computed from.
+struct Placement {
+    at: (f64, f64),
+    window: core_foundation::base::CFType,
+    frame: Rect,
+    caret: bool,
+}
+
 impl Target {
     /// Popup top-left in global top-left coordinates, or None if the terminal's window is gone.
-    fn place(&self) -> Option<(f64, f64)> {
-        let anchor = macos::locate_terminal(self.pid);
-        let caret = match anchor {
-            Some(Anchor::Caret(caret)) => caret,
-            Some(Anchor::Window(win)) => caret_in_window(win, self.cursor, self.grid, self.cell_px),
-            None => {
-                debug!("no terminal window found (Accessibility allowed?)");
-                return None;
-            }
+    fn place(&self, typing: bool) -> Option<Placement> {
+        let Some(located) = macos::locate_terminal(self.pid, typing) else {
+            debug!("no terminal window found (Accessibility allowed?)");
+            return None;
         };
-        let screens = macos::screens();
-        let at = popup_origin(caret, &screens);
-        debug!(
-            "anchor={anchor:?} cursor={:?} grid={:?} cell_px={:?} caret={caret:?} popup={at:?}",
-            self.cursor, self.grid, self.cell_px
-        );
-        Some(at)
+        let (caret, is_caret) = match located.anchor {
+            Anchor::Caret(caret) => (caret, true),
+            Anchor::Window(win) => (
+                caret_in_window(win, self.cursor, self.grid, self.cell_px),
+                false,
+            ),
+        };
+        let at = popup_origin(caret, &macos::screens());
+        if typing {
+            debug!(
+                "caret={is_caret} cursor={:?} grid={:?} cell_px={:?} at={caret:?} popup={at:?}",
+                self.cursor, self.grid, self.cell_px
+            );
+        }
+        Some(Placement {
+            at,
+            window: located.window,
+            frame: located.frame,
+            caret: is_caret,
+        })
     }
 }
 
@@ -208,8 +224,13 @@ struct Shown {
     /// Hide from another shell must not close it.
     session: String,
     target: Target,
-    at: (f64, f64),
+    placed: Placement,
+    /// Polls the window frame has stayed the same; the popup hides while the window moves.
+    still: u32,
 }
+
+/// Polls (16ms each) a moved window must stay put before the popup reappears on it.
+const SETTLE_POLLS: u32 = 3;
 
 struct Popup {
     items: Vec<Item>,
@@ -225,13 +246,11 @@ impl Popup {
         macos::hide(&ns_window);
         cx.spawn_in(window, async move |this, cx| {
             let mut shown: Option<Shown> = None;
-            let mut tick = 0u32;
             loop {
                 // ponytail: polls every 16ms; switch to an async channel if idle CPU matters.
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
-                tick = tick.wrapping_add(1);
                 let mut update = None;
                 // Window moves happen here, OUTSIDE gpui updates (see macos::show_at).
                 for msg in rx.try_iter() {
@@ -244,7 +263,7 @@ impl Popup {
                             grid,
                             cell_px,
                         } => {
-                            let Some(pid) = macos::frontmost_pid() else {
+                            let Some(pid) = macos::focused_app_pid() else {
                                 continue;
                             };
                             let target = Target {
@@ -253,14 +272,15 @@ impl Popup {
                                 grid,
                                 cell_px,
                             };
-                            let Some(at) = target.place() else {
+                            let Some(placed) = target.place(true) else {
                                 continue;
                             };
-                            macos::show_at(&ns_window, at.0, at.1);
+                            macos::show_at(&ns_window, placed.at.0, placed.at.1);
                             shown = Some(Shown {
                                 session,
                                 target,
-                                at,
+                                placed,
+                                still: SETTLE_POLLS,
                             });
                             update = Some((items, selected));
                         }
@@ -273,23 +293,36 @@ impl Popup {
                     }
                 }
                 if let Some(s) = &mut shown {
-                    if macos::frontmost_pid() != Some(s.target.pid) {
-                        // Switched app, or the terminal quit: the popup belongs to it.
-                        macos::hide(&ns_window);
-                        shown = None;
-                    } else if tick.is_multiple_of(3) {
-                        // Follow the terminal window while it is dragged or resized (~20Hz).
-                        match s.target.place() {
-                            Some(at) if at != s.at => {
-                                macos::show_at(&ns_window, at.0, at.1);
-                                s.at = at;
+                    let now = (macos::focused_app_pid() == Some(s.target.pid))
+                        .then(|| s.target.place(false))
+                        .flatten();
+                    match now {
+                        // Same window, and still on the terminal's caret if we had one
+                        // (clicking from a VSCode terminal into the editor loses it).
+                        Some(p) if p.window == s.placed.window && p.caret == s.placed.caret => {
+                            if p.frame != s.placed.frame {
+                                // The window is being dragged or resized: hide until it
+                                // settles instead of chasing it (polling always lags a drag,
+                                // which looks jerky).
+                                if s.still >= SETTLE_POLLS {
+                                    macos::hide(&ns_window);
+                                }
+                                s.still = 0;
+                            } else if s.still < SETTLE_POLLS {
+                                s.still += 1;
+                                if s.still == SETTLE_POLLS {
+                                    macos::show_at(&ns_window, p.at.0, p.at.1);
+                                }
+                            } else if p.at != s.placed.at {
+                                // Same window, caret moved (xterm.js caret while typing).
+                                macos::show_at(&ns_window, p.at.0, p.at.1);
                             }
-                            Some(_) => {}
-                            None => {
-                                // Its window closed (or lost focus inside the app).
-                                macos::hide(&ns_window);
-                                shown = None;
-                            }
+                            s.placed = p;
+                        }
+                        // Focus left: another app, another window, the terminal quit or closed.
+                        _ => {
+                            macos::hide(&ns_window);
+                            shown = None;
                         }
                     }
                 }
