@@ -30,6 +30,8 @@ use tflick_ipc::{Item, Kind, ToUi};
 
 const POPUP_W: f64 = 460.0;
 const POPUP_H: f64 = 230.0;
+/// Corner radius of the selected row; the popup's own corners follow it.
+const ROW_RADIUS: f32 = 8.0;
 
 fn icon(kind: Kind) -> &'static str {
     match kind {
@@ -255,6 +257,7 @@ impl Popup {
         macos::hide(&ns_window);
         cx.spawn_in(window, async move |this, cx| {
             let mut shown: Option<Shown> = None;
+            let pin = std::env::var_os("TFLICK_PIN").is_some();
             loop {
                 // ponytail: polls every 16ms; switch to an async channel if idle CPU matters.
                 // Faster while the popup follows a drag, so it doesn't trail the window.
@@ -375,6 +378,8 @@ impl Popup {
                             s.placed = p;
                         }
                         // Focus left: another app, another window, the terminal quit or closed.
+                        // TFLICK_PIN=1 keeps it, e.g. to take a screenshot.
+                        _ if pin => {}
                         _ => {
                             macos::hide(&ns_window);
                             shown = None;
@@ -435,7 +440,7 @@ impl Render for Popup {
                 .gap_2()
                 .px_2()
                 .py_0p5()
-                .rounded_md()
+                .rounded(px(ROW_RADIUS))
                 .when(is_selected, |d| {
                     d.bg(rgba(0x3b82f6ff)).text_color(rgba(0xffffffff))
                 })
@@ -456,7 +461,8 @@ impl Render for Popup {
         div()
             .size_full()
             .p_1()
-            .rounded_lg()
+            // Concentric with the rows: row radius + p_1 (4px) + border (1px).
+            .rounded(px(ROW_RADIUS + 5.))
             .border_1()
             .border_color(rgba(fg | 0x22))
             .bg(rgba(bg | self.tint))
