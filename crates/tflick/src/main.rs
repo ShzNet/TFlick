@@ -56,6 +56,13 @@ fn main() -> Result<()> {
 
     // Already inside tflick: become the shell instead of nesting a second PTY.
     if env::var_os("TFLICK").is_some() {
+        // Say so: otherwise a freshly built tflick run inside an old one looks like it does
+        // nothing new, since the outer (old) one keeps driving the popup.
+        eprintln!(
+            "tflick: already running in this terminal (session {}); starting a plain shell. \
+             Type `exit` to leave it, or open a new terminal window to use this build.",
+            env::var("TFLICK_SESSION_ID").unwrap_or_default()
+        );
         return Err(process::Command::new(&shell).args(&args).exec().into());
     }
 
