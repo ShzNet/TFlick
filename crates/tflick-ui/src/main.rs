@@ -5,7 +5,8 @@
 //! - `main`: starts the app and the popup window.
 //! - `controller`: polling loop, the only place that combines IPC, Accessibility and the window.
 //! - `ipc`, `macos`: I/O and OS glue (all `unsafe` lives in `macos`).
-//! - `view`: what the popup looks like.
+//! - `view`, `settings_view`: what the popup and the settings window look like.
+//! - `settings`: the user's settings (a gpui global, saved as JSON); `login`: launch at login.
 //! - `follow`, `layout`: pure decisions and geometry, unit tested.
 
 /// Diagnostics on stderr: `TFLICK_DEBUG=1 cargo run -p tflick-ui`.
@@ -22,7 +23,10 @@ mod controller;
 mod follow;
 mod ipc;
 mod layout;
+mod login;
 mod macos;
+mod settings;
+mod settings_view;
 mod view;
 
 use gpui::{
@@ -30,31 +34,19 @@ use gpui::{
     point, prelude::*, px, size,
 };
 
-use layout::{POPUP_H, POPUP_W};
+use settings::Settings;
 use view::{Assets, Popup};
-
-/// Tuning knobs, overridable without rebuilding: `TFLICK_BLUR=60 TFLICK_TINT=230`.
-fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
-}
 
 fn main() {
     let rx = ipc::listen();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         macos::hide_from_dock();
-        if !macos::accessibility_trusted(true) {
-            eprintln!(
-                "tflick-ui: needs Accessibility permission to find the terminal window.\n\
-                 Allow it in System Settings > Privacy & Security > Accessibility, then restart."
-            );
-        }
+        let settings = Settings::load();
         let bounds = Bounds {
             origin: point(px(0.), px(0.)),
-            size: size(px(POPUP_W as f32), px(POPUP_H as f32)),
+            size: size(px(settings.width as f32), px(settings.height as f32)),
         };
+        cx.set_global(settings);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -68,17 +60,24 @@ fn main() {
             },
             |window, cx| {
                 let ns_window = macos::ns_window(window).expect("gpui window has an NSWindow");
-                macos::set_blur(&ns_window, env_or("TFLICK_BLUR", 30));
                 macos::hide(&ns_window);
                 cx.new(|cx| {
                     cx.spawn_in(window, async move |view, cx| {
                         controller::run(ns_window, rx, view, cx).await
                     })
                     .detach();
-                    Popup::new()
+                    Popup::new(cx)
                 })
             },
         )
         .unwrap();
+        // First run, or the permission was removed: show where to grant it.
+        if !macos::accessibility_trusted(true) {
+            eprintln!(
+                "tflick-ui: needs Accessibility permission to find the terminal window.\n\
+                 Allow it in System Settings > Privacy & Security > Accessibility, then restart."
+            );
+            settings_view::open(cx, Some(settings_view::Page::Integrations));
+        }
     });
 }

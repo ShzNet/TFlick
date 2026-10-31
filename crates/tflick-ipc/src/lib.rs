@@ -28,6 +28,8 @@ pub enum ToUi {
     Hide {
         session: String,
     },
+    /// `tflick settings`: open (or bring to front) the settings window.
+    OpenSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

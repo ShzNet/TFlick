@@ -30,3 +30,7 @@
 
 ## Kiểm tra
 Mỗi mục có checklist riêng trong PR. Kiểm tra chung: dùng hằng ngày 1 tuần trên iTerm2 + Ghostty + VSCode, không phải tắt tflick lần nào.
+
+## Đã làm sớm
+- ✅ **Cửa sổ cài đặt** kiểu dashboard của Q (`tflick settings`, `crates/tflick-ui/src/settings_view.rs`): trang Gợi ý, Giao diện, Tích hợp, Phím tắt. Lưu `~/.config/tflick/settings.json`, key giống Q. Mục của P4/P5 hiện mờ "Sắp có", không lưu giá trị giả. Khi `tflick` cần đọc cài đặt (P4), chuyển `Settings` sang `tflick-ipc`.
+

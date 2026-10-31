@@ -6,6 +6,7 @@
 //! `osc` (OSC 697 splitting) and `shell` (its events); `cpr` parses cursor reports;
 //! `ui_client` talks to `tflick-ui`.
 //!
+//! `tflick settings` opens the settings window of `tflick-ui`.
 //! The zsh/bash/fish integration loads by itself (`integration`); `tflick init <shell>` also
 //! prints it, to load from an rc file instead.
 
@@ -25,7 +26,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, process, thread};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, native_pty_system};
 use signal_hook::consts::SIGWINCH;
 use signal_hook::iterator::Signals;
@@ -33,6 +34,15 @@ use signal_hook::iterator::Signals;
 fn main() -> Result<()> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let args: Vec<_> = env::args_os().skip(1).collect();
+
+    if args.first().is_some_and(|a| a == "settings") {
+        let mut conn = std::os::unix::net::UnixStream::connect(tflick_ipc::socket_path())
+            .context("tflick-ui is not running; start it first (cargo run -p tflick-ui)")?;
+        let mut line = serde_json::to_vec(&tflick_ipc::ToUi::OpenSettings)?;
+        line.push(b'\n');
+        conn.write_all(&line)?;
+        return Ok(());
+    }
 
     if args.first().is_some_and(|a| a == "init") {
         let shell = args.get(1).and_then(|s| s.to_str()).unwrap_or_default();

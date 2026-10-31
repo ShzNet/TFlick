@@ -71,7 +71,7 @@ Hai file chạy nằm ở `~/.cargo/bin` (đã có trong `PATH` nếu cài Rust 
 
 ### Tự bật `tflick-ui` khi đăng nhập
 
-Tạo `~/Library/LaunchAgents/net.shz.tflick-ui.plist` (thay `YOU` bằng tên user):
+Cách nhanh: `tflick settings` → **Tích hợp** → bật **Mở cùng máy**. Hoặc tự tạo `~/Library/LaunchAgents/net.shz.tflick-ui.plist` (thay `YOU` bằng tên user):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -143,6 +143,21 @@ eval "$(tflick init bash)"    # cuối ~/.bashrc
 tflick init fish | source     # trong config.fish
 ```
 
+## Cài đặt (giao diện)
+
+```sh
+tflick settings      # mở cửa sổ cài đặt (tflick-ui phải đang chạy)
+```
+
+Giống dashboard của Amazon Q, gồm các trang:
+
+- **Gợi ý**: bật/tắt gợi ý. Các mục của tính năng chưa làm (chèn dấu cách, tìm mờ, sắp xếp, chỉ hiện khi bấm Tab…) được liệt kê mờ, có nhãn "Sắp có".
+- **Giao diện**: sáng/tối/theo hệ thống, kích thước popup, cỡ chữ, độ mờ và độ đậm nền. Áp dụng ngay.
+- **Tích hợp**: trạng thái quyền Accessibility (có nút mở System Settings), mở `tflick-ui` cùng máy, đoạn mã để tự bọc shell khi mở terminal.
+- **Phím tắt**: sắp có (P4).
+
+Cài đặt lưu ở `~/.config/tflick/settings.json`, tên key giống Q (`autocomplete.theme`, `autocomplete.width`…); sửa tay cũng được, chạy lại `tflick-ui` để nạp. Lần đầu chạy mà chưa có quyền Accessibility, cửa sổ cài đặt tự mở ở trang Tích hợp.
+
 ## Biến môi trường
 
 | Biến | Dùng cho | Ý nghĩa |
@@ -151,8 +166,6 @@ tflick init fish | source     # trong config.fish
 | `TFLICK_NO_INJECT=1` | `tflick` | Không tự nạp script tích hợp shell |
 | `TFLICK_DEBUG=1` | `tflick-ui` | In chẩn đoán định vị ra stderr |
 | `TFLICK_PIN=1` | `tflick-ui` | Giữ popup khi terminal mất focus (để chụp màn hình) |
-| `TFLICK_BLUR=30` | `tflick-ui` | Độ mờ nền phía sau popup |
-| `TFLICK_TINT=160` | `tflick-ui` | Độ đậm nền popup, 0–255 |
 
 ## Xử lý sự cố
 

@@ -5,7 +5,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use core_foundation::base::CFType;
-use gpui::{AsyncWindowContext, WeakEntity};
+use gpui::{AsyncWindowContext, WeakEntity, px, size};
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
 use tflick_ipc::ToUi;
@@ -13,6 +13,8 @@ use tflick_ipc::ToUi;
 use crate::follow::{Cmd, Follow, Placed};
 use crate::layout::{caret_in_window, popup_origin};
 use crate::macos::{self, Anchor};
+use crate::settings::Settings;
+use crate::settings_view;
 use crate::view::Popup;
 
 /// Where the popup should be: the terminal app and the cursor cell it reported.
@@ -33,9 +35,10 @@ struct Placement {
 }
 
 impl Target {
-    /// Looks up the terminal's window now. None if it lost focus or is gone. `typing` wakes
-    /// Electron's AX tree and logs the result; follow-up polls pass false.
-    fn place(&self, typing: bool) -> Option<Placement> {
+    /// Looks up the terminal's window now, for a popup of `popup` size. None if it lost focus
+    /// or is gone. `typing` wakes Electron's AX tree and logs the result; follow-up polls pass
+    /// false.
+    fn place(&self, typing: bool, popup: (f64, f64)) -> Option<Placement> {
         let Some(located) = macos::locate_terminal(self.pid, typing) else {
             debug!("no terminal window found (Accessibility allowed?)");
             return None;
@@ -47,7 +50,7 @@ impl Target {
                 false,
             ),
         };
-        let at = popup_origin(caret, &macos::screens());
+        let at = popup_origin(caret, &macos::screens(), popup);
         if typing {
             debug!(
                 "caret={is_caret} cursor={:?} grid={:?} cell_px={:?} at={caret:?} popup={at:?}",
@@ -86,6 +89,8 @@ pub async fn run(
     let pin = std::env::var_os("TFLICK_PIN").is_some();
     let move_to = |(x, y): (f64, f64)| macos::show_at(&ns_window, x, y);
     let mut shown: Option<Shown> = None;
+    // Popup size and blur last applied to the window.
+    let mut applied = None;
     loop {
         // ponytail: polls every 16ms; switch to an async channel if idle CPU matters.
         // Faster while the popup follows a drag, so it doesn't trail the window.
@@ -94,9 +99,32 @@ pub async fn run(
             .timer(Duration::from_millis(if dragging { 4 } else { 16 }))
             .await;
 
+        let Ok(settings) = cx.update(|_, cx| cx.global::<Settings>().clone()) else {
+            break;
+        };
+        let popup = (f64::from(settings.width), f64::from(settings.height));
+        let wanted = (settings.width, settings.height, settings.blur);
+        if applied != Some(wanted) || (settings.disabled && shown.is_some()) {
+            // Changed in the settings window, while the popup is hidden anyway (the terminal
+            // lost focus to it).
+            macos::hide(&ns_window);
+            shown = None;
+            if applied != Some(wanted) {
+                let _ = cx.update(|window, _| {
+                    window.resize(size(px(popup.0 as f32), px(popup.1 as f32)))
+                });
+                macos::set_blur(&ns_window, settings.blur.into());
+                applied = Some(wanted);
+            }
+        }
+
         let mut items = None;
         for msg in rx.try_iter() {
             match msg {
+                ToUi::OpenSettings => {
+                    let _ = cx.update(|_, cx| settings_view::open(cx, None));
+                }
+                ToUi::Show { .. } if settings.disabled => {}
                 ToUi::Show {
                     session,
                     items: new_items,
@@ -114,7 +142,7 @@ pub async fn run(
                         grid,
                         cell_px,
                     };
-                    let Some(p) = target.place(true) else {
+                    let Some(p) = target.place(true, popup) else {
                         continue;
                     };
                     move_to(p.placed.at);
@@ -143,7 +171,7 @@ pub async fn run(
                 move_to(at);
             } else {
                 let now = (macos::focused_app_pid() == Some(s.target.pid))
-                    .then(|| s.target.place(false))
+                    .then(|| s.target.place(false, popup))
                     .flatten();
                 match now {
                     // Same window, and still on the terminal's caret if we had one (clicking

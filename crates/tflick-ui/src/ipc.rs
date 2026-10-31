@@ -24,8 +24,10 @@ pub fn listen() -> Receiver<ToUi> {
                     let Ok(line) = line else { break };
                     match serde_json::from_str::<ToUi>(&line) {
                         Ok(msg) => {
-                            let (ToUi::Show { session: s, .. } | ToUi::Hide { session: s }) = &msg;
-                            session = Some(s.clone());
+                            if let ToUi::Show { session: s, .. } | ToUi::Hide { session: s } = &msg
+                            {
+                                session = Some(s.clone());
+                            }
                             if tx.send(msg).is_err() {
                                 return;
                             }

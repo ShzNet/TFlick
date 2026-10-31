@@ -15,9 +15,6 @@ impl Rect {
     }
 }
 
-pub const POPUP_W: f64 = 460.0;
-pub const POPUP_H: f64 = 230.0;
-
 /// The cursor cell inside a terminal window, in global top-left coordinates.
 ///
 /// The text grid's origin inside the window is unknown (title bar, tab bar, padding vary per
@@ -52,9 +49,9 @@ pub fn caret_in_window(
     }
 }
 
-/// Where the popup's top-left corner goes: just under the caret, flipped above it near the
-/// bottom of the screen, shifted left near the right edge.
-pub fn popup_origin(caret: Rect, screens: &[Rect]) -> (f64, f64) {
+/// Where a popup of `(w, h)` puts its top-left corner: just under the caret, flipped above it
+/// near the bottom of the screen, shifted left near the right edge.
+pub fn popup_origin(caret: Rect, screens: &[Rect], (w, h): (f64, f64)) -> (f64, f64) {
     let screen = screens
         .iter()
         .find(|s| s.contains((caret.x, caret.y)))
@@ -62,10 +59,10 @@ pub fn popup_origin(caret: Rect, screens: &[Rect]) -> (f64, f64) {
         .copied()
         .unwrap_or(caret);
     let mut y = caret.y + caret.h;
-    if y + POPUP_H > screen.y + screen.h {
-        y = caret.y - POPUP_H;
+    if y + h > screen.y + screen.h {
+        y = caret.y - h;
     }
-    let x = caret.x.min(screen.x + screen.w - POPUP_W).max(screen.x);
+    let x = caret.x.min(screen.x + screen.w - w).max(screen.x);
     (x, y)
 }
 
@@ -73,6 +70,7 @@ pub fn popup_origin(caret: Rect, screens: &[Rect]) -> (f64, f64) {
 mod tests {
     use super::*;
 
+    const POPUP: (f64, f64) = (460.0, 230.0);
     const SCREEN: Rect = Rect {
         x: 0.0,
         y: 25.0,
@@ -122,7 +120,7 @@ mod tests {
             w: 8.0,
             h: 16.0,
         };
-        assert_eq!(popup_origin(caret, &[SCREEN]), (300.0, 216.0));
+        assert_eq!(popup_origin(caret, &[SCREEN], POPUP), (300.0, 216.0));
     }
 
     #[test]
@@ -134,8 +132,8 @@ mod tests {
             h: 16.0,
         };
         assert_eq!(
-            popup_origin(caret, &[SCREEN]),
-            (SCREEN.w - POPUP_W, 900.0 - POPUP_H)
+            popup_origin(caret, &[SCREEN], POPUP),
+            (SCREEN.w - POPUP.0, 900.0 - POPUP.1)
         );
     }
 }

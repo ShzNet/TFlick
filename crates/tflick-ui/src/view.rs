@@ -9,24 +9,23 @@ use gpui::{
 };
 use tflick_ipc::{Item, Kind};
 
-use crate::env_or;
+use crate::settings::{Settings, Theme};
 
 /// Corner radius of the selected row; the popup's own corners follow it.
 const ROW_RADIUS: f32 = 8.0;
 
+/// Theme, font size and tint come from [`Settings`]; size and blur are the controller's.
 pub struct Popup {
     pub items: Vec<Item>,
     pub selected: usize,
-    /// Background tint alpha 0-255: higher hides the content behind more.
-    tint: u32,
 }
 
 impl Popup {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        cx.observe_global::<Settings>(|_, cx| cx.notify()).detach();
         Self {
             items: Vec::new(),
             selected: 0,
-            tint: env_or("TFLICK_TINT", 0xa0u32).min(255),
         }
     }
 }
@@ -80,15 +79,20 @@ impl AssetSource for Assets {
 }
 
 impl Render for Popup {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings = cx.global::<Settings>();
         // Follow the system theme like native menus: a light popup with dark text in light mode,
         // so text stays readable over the light apps behind it, and the reverse in dark mode.
         // ponytail: picks colors from the system theme, not from what is actually behind the
         // popup; a dark app under a light-mode popup still relies on the tint for contrast.
-        let dark = matches!(
-            window.appearance(),
-            WindowAppearance::Dark | WindowAppearance::VibrantDark
-        );
+        let dark = match settings.theme {
+            Theme::System => matches!(
+                window.appearance(),
+                WindowAppearance::Dark | WindowAppearance::VibrantDark
+            ),
+            Theme::Dark => true,
+            Theme::Light => false,
+        };
         let (bg, fg) = if dark {
             (0x1e1e2200, 0xffffff00)
         } else {
@@ -137,9 +141,9 @@ impl Render for Popup {
             .rounded(px(ROW_RADIUS + 5.))
             .border_1()
             .border_color(rgba(fg | 0x22))
-            .bg(rgba(bg | self.tint))
+            .bg(rgba(bg | settings.tint))
             .text_color(rgba(fg | 0xff))
-            .text_sm()
+            .text_size(px(settings.font_size as f32))
             .font_family(".SystemUIFont")
             .flex()
             .flex_col()

@@ -17,7 +17,8 @@ crates/tflick/src/       main (nối thread) · tty (terminal thật, raw mode, 
                          osc (tách OSC 697) · shell (sự kiện OSC 697) · cpr (báo cáo con trỏ)
                          ui_client (socket) · integration (tự nạp script shell qua ZDOTDIR)
 crates/tflick-ui/src/    main (khởi động) · controller (vòng poll, nơi duy nhất ghép IPC + AX + cửa sổ)
-                         follow, layout (logic thuần, có test) · view (giao diện gpui)
+                         follow, layout (logic thuần, có test) · view (popup gpui)
+                         settings (cài đặt, global gpui, JSON) · settings_view (cửa sổ cài đặt) · login
                          ipc (socket) · macos/{window,ax} (glue hệ điều hành, unsafe)
 crates/tflick-ipc/       kiểu message dùng chung
 shell/                   tflick.zsh/.bash/.fish (+ bash-preexec.sh), nhúng bằng include_str!, tự nạp khi chạy tflick
