@@ -8,6 +8,7 @@ license.workspace = true
 alacritty_terminal = "0.26"
 anyhow.workspace = true
 crossterm = "0.29"
+libc = "0.2"
 portable-pty = "0.9"
 serde_json = "1.0.154"
 signal-hook = "0.3"

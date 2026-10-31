@@ -5,6 +5,7 @@ mod ui;
 
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, process, thread};
@@ -54,8 +55,11 @@ fn main() -> Result<()> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let args: Vec<_> = env::args_os().skip(1).collect();
 
-    // Already inside tflick: become the shell instead of nesting a second PTY.
-    if env::var_os("TFLICK").is_some() {
+    // Already inside tflick: become the shell instead of nesting a second PTY. Compare ttys, not
+    // just an env var: TFLICK* vars leak into anything launched from a tflick shell (e.g. `code .`
+    // gives every VSCode terminal TFLICK=1), and those other terminals must still get tflick.
+    let outer_tty = env::var_os("TFLICK_TTY").map(PathBuf::from);
+    if outer_tty.is_some() && outer_tty == sys::stdin_tty() {
         // Say so: otherwise a freshly built tflick run inside an old one looks like it does
         // nothing new, since the outer (old) one keeps driving the popup.
         eprintln!(
@@ -73,6 +77,9 @@ fn main() -> Result<()> {
     // portable-pty defaults cwd to $HOME, keep the caller's directory instead.
     cmd.cwd(env::current_dir()?);
     cmd.env("TFLICK", "1");
+    if let Some(tty) = pair.master.tty_name() {
+        cmd.env("TFLICK_TTY", tty);
+    }
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let session = format!("{}-{nanos}", process::id());
     cmd.env("TFLICK_SESSION_ID", &session);
@@ -157,4 +164,19 @@ fn main() -> Result<()> {
 
     drop(raw);
     process::exit(status.exit_code() as i32);
+}
+
+mod sys {
+    use std::ffi::CStr;
+    use std::path::PathBuf;
+
+    /// Path of the terminal device on stdin, e.g. /dev/ttys003.
+    pub fn stdin_tty() -> Option<PathBuf> {
+        // SAFETY: ttyname returns null or a pointer to a static NUL-terminated buffer, copied out
+        // immediately (we never call it from two threads at once: only at startup).
+        unsafe {
+            let p = libc::ttyname(0);
+            (!p.is_null()).then(|| PathBuf::from(CStr::from_ptr(p).to_string_lossy().into_owned()))
+        }
+    }
 }
