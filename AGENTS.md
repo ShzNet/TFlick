@@ -34,6 +34,11 @@ scripts/build-specs.sh           # compile spec từ refs/autocomplete → specs
 ```
 Log: đặt `TFLICK_LOG=/tmp/tflick.log`.
 
+## Lấy `refs/` (bị gitignore)
+```sh
+mkdir -p refs && cd refs && for r in aws/amazon-q-developer-cli-autocomplete withfig/autocomplete withfig/autocomplete-tools; do git clone --depth 1 https://github.com/$r.git; done
+```
+
 ## Nguồn tham khảo khi port
 Port từ code có sẵn trong `refs/` thay vì tự nghĩ lại từ đầu. Khi port, ghi file nguồn vào doc comment, ví dụ `// port: packages/autocomplete-parser/src/parseArguments.ts`.
 
