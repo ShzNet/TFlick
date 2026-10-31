@@ -33,8 +33,39 @@ const ITEMS: [(&str, &str); 8] = [
 
 struct Popup {
     tick: usize,
+    /// Background tint alpha 0-255: higher hides the content behind more.
+    tint: u32,
     max_frame: Duration,
     last_scale: f32,
+}
+
+// SkyLight private API, same declaration gpui uses (gpui-0.2.2/src/platform/mac/window.rs:94).
+// Also what Terminal.app, kitty and Alacritty use for background blur.
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGSMainConnectionID() -> *mut std::ffi::c_void;
+    fn CGSSetWindowBackgroundBlurRadius(
+        connection_id: *mut std::ffi::c_void,
+        window_id: isize,
+        radius: i64,
+    ) -> i32;
+}
+
+/// Tuning knobs, overridable without rebuilding: `TFLICK_BLUR=60 TFLICK_TINT=230`.
+fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Blurs whatever is behind the window. gpui's `Blurred` uses a light NSVisualEffectView with no
+/// radius control, so we keep the window `Transparent` and set the blur radius ourselves.
+fn set_blur(ns_window: &NSWindow, radius: i64) {
+    // SAFETY: plain C call on our own window number; returns an error code we can ignore.
+    unsafe {
+        CGSSetWindowBackgroundBlurRadius(CGSMainConnectionID(), ns_window.windowNumber(), radius);
+    }
 }
 
 /// The NSWindow behind a gpui window.
@@ -70,6 +101,7 @@ fn follow_mouse(ns_window: &NSWindow, visible: bool) {
 impl Popup {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let ns_window = ns_window(window).expect("gpui window has an NSWindow");
+        set_blur(&ns_window, env_or("TFLICK_BLUR", 50));
         cx.spawn_in(window, async move |this, cx| {
             let mut tick = 0usize;
             loop {
@@ -104,6 +136,7 @@ impl Popup {
         .detach();
         Self {
             tick: 0,
+            tint: env_or("TFLICK_TINT", 0xd0u32).min(255),
             max_frame: Duration::ZERO,
             last_scale: 0.0,
         }
@@ -141,7 +174,7 @@ impl Render for Popup {
             .rounded_lg()
             .border_1()
             .border_color(rgba(0xffffff22))
-            .bg(rgba(0x1e1e2299))
+            .bg(rgba(0x1e1e2200 | self.tint))
             .text_color(rgba(0xffffffee))
             .text_sm()
             .font_family(".SystemUIFont")
@@ -165,7 +198,7 @@ fn main() {
                 show: true,
                 kind: WindowKind::PopUp,
                 is_movable: false,
-                window_background: WindowBackgroundAppearance::Blurred,
+                window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| Popup::new(window, cx)),
