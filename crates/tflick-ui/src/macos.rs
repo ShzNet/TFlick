@@ -21,7 +21,9 @@ use core_foundation::string::CFString;
 use gpui::Window;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen, NSView, NSWindow};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSEvent, NSScreen, NSView, NSWindow,
+};
 use objc2_foundation::NSPoint;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -100,6 +102,12 @@ pub fn show_at(ns_window: &NSWindow, x: f64, y: f64) {
 
 pub fn hide(ns_window: &NSWindow) {
     ns_window.orderOut(None);
+}
+
+/// Whether the left mouse button is held right now (anywhere on screen), e.g. during a window
+/// drag.
+pub fn left_mouse_down() -> bool {
+    NSEvent::pressedMouseButtons() & 1 != 0
 }
 
 /// Visible frames (minus menu bar and Dock) of all screens, in global top-left coordinates.

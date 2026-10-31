@@ -229,8 +229,10 @@ struct Shown {
     still: u32,
 }
 
-/// Polls (16ms each) a moved window must stay put before the popup reappears on it.
-const SETTLE_POLLS: u32 = 3;
+/// Polls (16ms each) a moved window must stay put, with the mouse released, before the popup
+/// reappears on it. AX reports a dragged window's position in bursts, with gaps longer than a
+/// few polls, so the mouse button is what really tells a drag is over.
+const SETTLE_POLLS: u32 = 6;
 
 struct Popup {
     items: Vec<Item>,
@@ -309,7 +311,12 @@ impl Popup {
                                 }
                                 s.still = 0;
                             } else if s.still < SETTLE_POLLS {
-                                s.still += 1;
+                                // Still dragging (mouse held) restarts the wait.
+                                s.still = if macos::left_mouse_down() {
+                                    0
+                                } else {
+                                    s.still + 1
+                                };
                                 if s.still == SETTLE_POLLS {
                                     macos::show_at(&ns_window, p.at.0, p.at.1);
                                 }

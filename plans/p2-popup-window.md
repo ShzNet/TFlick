@@ -68,7 +68,7 @@ Phía `tflick` (tạm, trước P1): vị trí con trỏ lấy **từ chính ter
 Đã làm (chờ thử tay), poll AX mỗi 16ms khi popup đang hiện:
 - Ẩn khi focus rời đi: app có focus (hỏi trực tiếp AX system-wide `AXFocusedApplication`; `NSWorkspace.frontmostApplication` là cache, bị trễ, lần thử đầu không ẩn được), cửa sổ focus khác cửa sổ lúc hiện (so bằng CFEqual), hoặc mất caret xterm.js (bấm từ terminal VSCode sang editor).
 - Ẩn khi kết nối của `tflick` đóng (đóng tab/cửa sổ, crash).
-- Kéo/resize cửa sổ: **ẩn trong lúc khung cửa sổ đang đổi, hiện lại sau khi đứng yên ~50ms** (cách của Fig). Lần đầu cho popup chạy theo mỗi 50ms thì bị giật vì poll luôn trễ hơn thao tác kéo.
+- Kéo/resize cửa sổ: **ẩn khi khung cửa sổ bắt đầu đổi, giữ ẩn chừng nào chuột trái còn giữ, hiện lại khi đã thả chuột và cửa sổ đứng yên ~100ms** (cách của Fig). Lần 1 đuổi theo mỗi 50ms: giật vì poll trễ hơn tay kéo. Lần 2 ẩn tới khi đứng yên 50ms: vẫn nhấp nháy vì AX cập nhật vị trí cửa sổ đang kéo theo từng đợt, có khoảng nghỉ >50ms giữa lúc kéo.
 - Caret xterm.js đổi chỗ trong cùng cửa sổ (đang gõ) thì dời popup ngay, không ẩn.
 - Terminal mất focus (theo dõi notification `NSWorkspaceDidActivateApplication`), cửa sổ di chuyển hoặc resize, hoặc nhận `Hide`.
 
