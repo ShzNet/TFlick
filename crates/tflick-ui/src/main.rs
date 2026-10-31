@@ -1,6 +1,16 @@
 //! `tflick-ui`: one daemon per user. Listens on a unix socket for `ToUi` messages from every
 //! `tflick` and draws the suggestion popup next to the terminal cursor.
 
+/// Diagnostics on stderr: `TFLICK_DEBUG=1 cargo run -p tflick-ui`.
+macro_rules! debug {
+    ($($arg:tt)*) => {
+        if std::env::var_os("TFLICK_DEBUG").is_some() {
+            eprintln!("tflick-ui: {}", format_args!($($arg)*));
+        }
+    };
+}
+
+// After `debug!` so the module can use it.
 mod macos;
 
 use std::borrow::Cow;
@@ -67,15 +77,6 @@ impl AssetSource for Assets {
     fn list(&self, _path: &str) -> anyhow::Result<Vec<SharedString>> {
         Ok(Vec::new())
     }
-}
-
-/// Positioning diagnostics on stderr: `TFLICK_DEBUG=1 cargo run -p tflick-ui`.
-macro_rules! debug {
-    ($($arg:tt)*) => {
-        if std::env::var_os("TFLICK_DEBUG").is_some() {
-            eprintln!("tflick-ui: {}", format_args!($($arg)*));
-        }
-    };
 }
 
 /// Tuning knobs, overridable without rebuilding: `TFLICK_BLUR=60 TFLICK_TINT=230`.

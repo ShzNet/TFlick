@@ -5,7 +5,6 @@
 //! screen, y down. Cocoa (NSWindow, NSScreen) uses the BOTTOM-left, y up.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicI32, Ordering};
 
 use accessibility_sys::{
     AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
@@ -138,9 +137,6 @@ pub enum Anchor {
     Window(Rect),
 }
 
-/// Pid we last turned Electron's accessibility tree on for.
-static ELECTRON_AX_PID: AtomicI32 = AtomicI32::new(-1);
-
 /// Locates the terminal the user is typing in (the frontmost app).
 pub fn locate_terminal() -> Option<Anchor> {
     let pid = NSWorkspace::sharedWorkspace()
@@ -149,54 +145,86 @@ pub fn locate_terminal() -> Option<Anchor> {
     // SAFETY: every Copy/Create result is released exactly once below.
     unsafe {
         let app = AXUIElementCreateApplication(pid);
-        // Electron apps (VSCode…) only build their AX tree when asked to. Harmless elsewhere.
-        // The tree is built asynchronously, so the very first lookup may still miss.
-        if ELECTRON_AX_PID.swap(pid, Ordering::Relaxed) != pid {
-            let attr = CFString::from_static_string("AXManualAccessibility");
-            AXUIElementSetAttributeValue(
-                app,
-                attr.as_concrete_TypeRef(),
-                CFBoolean::true_value().as_CFTypeRef(),
-            );
-        }
         let caret = copy_attr(app, kAXFocusedUIElementAttribute).and_then(|el| {
             let caret = xterm_caret(el as AXUIElementRef);
+            if caret.is_none() {
+                debug!(
+                    "focused element is not an xterm.js caret: {}",
+                    describe(el as _)
+                );
+            }
             CFRelease(el);
             caret
         });
         let anchor = match caret {
             Some(c) => Some(Anchor::Caret(c)),
-            None => copy_attr(app, kAXFocusedWindowAttribute)
-                .and_then(|w| {
-                    let r = frame(w as AXUIElementRef);
-                    CFRelease(w);
-                    r
-                })
-                .map(Anchor::Window),
+            None => {
+                // Electron apps (VSCode…) only expose their AX tree once asked, and build it
+                // asynchronously, so ask again on every miss: the next keystroke will find it.
+                // Harmless (an error code) for non-Electron apps.
+                let attr = CFString::from_static_string("AXManualAccessibility");
+                AXUIElementSetAttributeValue(
+                    app,
+                    attr.as_concrete_TypeRef(),
+                    CFBoolean::true_value().as_CFTypeRef(),
+                );
+                copy_attr(app, kAXFocusedWindowAttribute)
+                    .and_then(|w| {
+                        let r = frame(w as AXUIElementRef);
+                        CFRelease(w);
+                        r
+                    })
+                    .map(Anchor::Window)
+            }
         };
         CFRelease(app as CFTypeRef);
         anchor
     }
 }
 
-/// xterm.js keeps a hidden `xterm-helper-textarea` on the cursor cell (for IME), so its frame
-/// is the caret. port: macos-utils/src/window_server/ui_element.rs `find_x_term_caret_tree`.
-unsafe fn xterm_caret(element: AXUIElementRef) -> Option<Rect> {
-    // SAFETY: a +1 CFArray from copy_attr, released when `classes` drops.
-    let classes = unsafe {
-        CFArray::<CFType>::wrap_under_create_rule(
-            copy_attr(element, "AXDOMClassList")? as CFArrayRef
-        )
+/// Role and DOM classes of an element, for TFLICK_DEBUG logs.
+unsafe fn describe(element: AXUIElementRef) -> String {
+    // SAFETY: +1 results wrapped under the create rule, released on drop.
+    let role = unsafe { copy_attr(element, "AXRole") }
+        .map(|v| unsafe { CFType::wrap_under_create_rule(v) })
+        .and_then(|v| v.downcast::<CFString>())
+        .map(|s| s.to_string());
+    format!("role={role:?} classes={:?}", unsafe {
+        dom_classes(element)
+    })
+}
+
+/// The element's HTML classes, for web content (Electron); empty for native views.
+unsafe fn dom_classes(element: AXUIElementRef) -> Vec<String> {
+    // SAFETY: a +1 value from copy_attr, released when `value` drops; only read as an array
+    // after checking its type.
+    let Some(value) = (unsafe { copy_attr(element, "AXDOMClassList") })
+        .map(|v| unsafe { CFType::wrap_under_create_rule(v) })
+    else {
+        return Vec::new();
     };
-    let is_xterm = classes.iter().any(|c| {
-        c.downcast::<CFString>()
-            .is_some_and(|s| s == "xterm-helper-textarea")
-    });
+    if !value.instance_of::<CFArray>() {
+        return Vec::new();
+    }
+    let classes =
+        unsafe { CFArray::<CFType>::wrap_under_get_rule(value.as_CFTypeRef() as CFArrayRef) };
+    classes
+        .iter()
+        .filter_map(|c| c.downcast::<CFString>())
+        .map(|c| c.to_string())
+        .collect()
+}
+
+/// xterm.js keeps a hidden `xterm-helper-textarea` on the cursor cell (for IME), so its frame
+/// is the caret. It is the app's focused element while the user types in the terminal.
+/// port: macos-utils/src/window_server/ui_element.rs `find_x_term_caret_tree`.
+unsafe fn xterm_caret(element: AXUIElementRef) -> Option<Rect> {
     // SAFETY: `element` is a valid AX element owned by the caller.
-    if is_xterm {
-        unsafe { frame(element) }
-    } else {
-        None
+    unsafe {
+        let is_xterm = dom_classes(element)
+            .iter()
+            .any(|c| c == "xterm-helper-textarea");
+        if is_xterm { frame(element) } else { None }
     }
 }
 
