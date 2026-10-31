@@ -254,8 +254,12 @@ impl Popup {
             let mut shown: Option<Shown> = None;
             loop {
                 // ponytail: polls every 16ms; switch to an async channel if idle CPU matters.
+                // Faster while the popup follows a drag, so it doesn't trail the window.
+                let dragging = shown
+                    .as_ref()
+                    .is_some_and(|s| s.follow && s.press.is_some());
                 cx.background_executor()
-                    .timer(Duration::from_millis(16))
+                    .timer(Duration::from_millis(if dragging { 4 } else { 16 }))
                     .await;
                 let mut update = None;
                 // Window moves happen here, OUTSIDE gpui updates (see macos::show_at).
@@ -300,7 +304,15 @@ impl Popup {
                         }
                     }
                 }
-                if let Some(s) = &mut shown {
+                if let Some(s) = &mut shown
+                    && s.follow
+                    && macos::left_mouse_down()
+                    && let Some(((mx, my), (x, y))) = s.press
+                {
+                    // Mid-drag only the mouse matters: skip the slow AX lookups.
+                    let (nx, ny) = macos::mouse_location();
+                    macos::show_at(&ns_window, x + nx - mx, y + ny - my);
+                } else if let Some(s) = &mut shown {
                     let now = (macos::focused_app_pid() == Some(s.target.pid))
                         .then(|| s.target.place(false))
                         .flatten();
