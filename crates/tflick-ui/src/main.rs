@@ -225,13 +225,17 @@ struct Shown {
     session: String,
     target: Target,
     placed: Placement,
-    /// Polls the window frame has stayed the same; the popup hides while the window moves.
+    /// Polls the window frame has stayed the same.
     still: u32,
+    /// Mouse position and popup position when the left button went down on a settled popup.
+    press: Option<((f64, f64), (f64, f64))>,
+    /// The window moves with that press (title bar drag): the popup follows the mouse.
+    follow: bool,
 }
 
-/// Polls (16ms each) a moved window must stay put, with the mouse released, before the popup
-/// reappears on it. AX reports a dragged window's position in bursts, with gaps longer than a
-/// few polls, so the mouse button is what really tells a drag is over.
+/// Polls (16ms each) a moved window must stay put, with the mouse released, before the popup is
+/// placed from AX again. AX reports a dragged window's position in bursts, with gaps longer than
+/// a few polls, so the mouse button is what really tells a drag is over.
 const SETTLE_POLLS: u32 = 6;
 
 struct Popup {
@@ -283,6 +287,8 @@ impl Popup {
                                 target,
                                 placed,
                                 still: SETTLE_POLLS,
+                                press: None,
+                                follow: false,
                             });
                             update = Some((items, selected));
                         }
@@ -302,25 +308,40 @@ impl Popup {
                         // Same window, and still on the terminal's caret if we had one
                         // (clicking from a VSCode terminal into the editor loses it).
                         Some(p) if p.window == s.placed.window && p.caret == s.placed.caret => {
+                            let down = macos::left_mouse_down();
+                            if !down {
+                                s.press = None;
+                            } else if s.press.is_none() && s.still >= SETTLE_POLLS {
+                                s.press = Some((macos::mouse_location(), s.placed.at));
+                            }
                             if p.frame != s.placed.frame {
-                                // The window is being dragged or resized: hide until it
-                                // settles instead of chasing it (polling always lags a drag,
-                                // which looks jerky).
-                                if s.still >= SETTLE_POLLS {
+                                // A title bar drag moves the window exactly with the mouse,
+                                // and the mouse position is live while AX frames lag in
+                                // bursts: follow the mouse. Resizes and keyboard moves
+                                // (Rectangle…) can't be predicted: hide until settled.
+                                // Keep following after release: AX still reports a few late
+                                // frames then.
+                                let resized =
+                                    (p.frame.w, p.frame.h) != (s.placed.frame.w, s.placed.frame.h);
+                                s.follow = (s.follow || s.press.is_some()) && !resized;
+                                if !s.follow {
                                     macos::hide(&ns_window);
                                 }
                                 s.still = 0;
-                            } else if s.still < SETTLE_POLLS {
-                                // Still dragging (mouse held) restarts the wait.
-                                s.still = if macos::left_mouse_down() {
-                                    0
-                                } else {
-                                    s.still + 1
-                                };
+                            }
+                            if let (true, Some(((mx, my), (x, y)))) = (s.follow, s.press) {
+                                let (nx, ny) = macos::mouse_location();
+                                macos::show_at(&ns_window, x + nx - mx, y + ny - my);
+                            } else if p.frame == s.placed.frame && s.still < SETTLE_POLLS {
+                                // Mouse held restarts the wait.
+                                s.still = if down { 0 } else { s.still + 1 };
                                 if s.still == SETTLE_POLLS {
+                                    // Correct the mouse-predicted position (the window may
+                                    // have been stopped at the menu bar).
                                     macos::show_at(&ns_window, p.at.0, p.at.1);
+                                    s.follow = false;
                                 }
-                            } else if p.at != s.placed.at {
+                            } else if s.still >= SETTLE_POLLS && p.at != s.placed.at {
                                 // Same window, caret moved (xterm.js caret while typing).
                                 macos::show_at(&ns_window, p.at.0, p.at.1);
                             }

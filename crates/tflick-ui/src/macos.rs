@@ -110,6 +110,12 @@ pub fn left_mouse_down() -> bool {
     NSEvent::pressedMouseButtons() & 1 != 0
 }
 
+/// Mouse pointer position, in global top-left coordinates. Live, unlike AX window frames.
+pub fn mouse_location() -> (f64, f64) {
+    let p = NSEvent::mouseLocation();
+    (p.x, primary_screen_height() - p.y)
+}
+
 /// Visible frames (minus menu bar and Dock) of all screens, in global top-left coordinates.
 pub fn screens() -> Vec<Rect> {
     let mtm = MainThreadMarker::new().expect("called on the main thread");
