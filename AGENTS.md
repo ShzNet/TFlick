@@ -12,14 +12,24 @@ TFlick: terminal autocomplete kiểu Fig / Amazon Q, viết bằng Rust, ưu ti�
 
 ## Cấu trúc
 ```
-crates/tflick/      pty, term, keys, parser, specs, engine (bin + lib)
-crates/tflick-ui/   gpui popup, định vị, Accessibility
-crates/tflick-ipc/  kiểu message dùng chung
-shell/              tflick.zsh/.bash/.fish, nhúng bằng include_str!
-specs/              spec JS đã compile (sinh ra, không commit)
-plans/              plan theo phase
-refs/               repo tham khảo, CHỈ ĐỌC, không sửa, không build
+crates/tflick/src/       main (nối thread) · tty (terminal thật, raw mode, unsafe)
+                         popup (quyết định hiện gì) · cpr (parse báo cáo con trỏ) · ui_client (socket)
+crates/tflick-ui/src/    main (khởi động) · controller (vòng poll, nơi duy nhất ghép IPC + AX + cửa sổ)
+                         follow, layout (logic thuần, có test) · view (giao diện gpui)
+                         ipc (socket) · macos/{window,ax} (glue hệ điều hành, unsafe)
+crates/tflick-ipc/       kiểu message dùng chung
+shell/                   tflick.zsh/.bash/.fish, nhúng bằng include_str!
+specs/                   spec JS đã compile (sinh ra, không commit)
+plans/                   plan theo phase
+refs/                    repo tham khảo, CHỈ ĐỌC, không sửa, không build
 ```
+
+### Phân tầng (functional core, imperative shell)
+- **Lõi thuần**: quyết định và tính toán (`layout`, `follow`, `cpr`, sau này parser/engine). Không gọi OS, không I/O, nhận dữ liệu quan sát được và trả về kết quả/lệnh (`follow::Cmd`). Mọi logic có nhánh đặt ở đây và có unit test.
+- **Vỏ I/O**: `tty`, `ui_client`, `ipc`, `macos/*`. Mỏng, không chứa quyết định, gom hết `unsafe`.
+- **Điều phối**: `main`, `controller`. Đọc từ vỏ I/O, đưa vào lõi, thực thi lệnh lõi trả về.
+- Phụ thuộc chỉ đi từ ngoài vào trong: lõi không `use` vỏ I/O hay điều phối; `view` không biết định vị.
+- Module mới cho phase sau (parser, specs, engine…) theo cùng cách: lõi thuần trước, I/O bọc ngoài.
 
 ## Lệnh
 ```sh
@@ -57,7 +67,7 @@ Port từ code có sẵn trong `refs/` thay vì tự nghĩ lại từ đầu. Kh
 ## Quy ước
 - Rust edition 2024. Dùng `anyhow` trong bin, `thiserror` chỉ khi caller thật sự cần match lỗi.
 - Không thêm crate mới khi stdlib hoặc crate đã có làm được. Thêm crate mới thì ghi lý do vào commit.
-- Mọi `unsafe` (objc2, AX, termios) phải có comment `// SAFETY:` và gom vào module `macos`/`sys`.
+- Mọi `unsafe` (objc2, AX, termios, libc) phải có comment `// SAFETY:` và chỉ nằm trong module glue OS (`tflick-ui/src/macos/`, `tflick/src/tty.rs`).
 - Luồng PTY **không bao giờ được chặn**: chạy generator, gọi JS, gọi IPC đều phải ở thread khác hoặc có timeout. Shell bị treo là lỗi nghiêm trọng nhất.
 - Lỗi trong spec hoặc JS: log rồi bỏ qua, tuyệt đối không panic.
 - Logic thuần (parser, edit buffer, insertion) phải có unit test. Test parser ưu tiên port từ test TS trong `refs/`.

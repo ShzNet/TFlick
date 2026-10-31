@@ -1,14 +1,9 @@
-//! Tracks the screen (cursor position) and tells `tflick-ui` where to show the popup.
+//! Decides when the popup shows and where the cursor is, and tells `tflick-ui`.
 //!
-//! The cursor position comes from the real terminal itself: after shell output we ask it
-//! (DSR `ESC[6n`) and it answers on stdin (CPR `ESC[row;colR`), which we strip before the shell
-//! sees it. Our own screen model (alacritty_terminal) can drift from the real screen (content
+//! The cursor position comes from the real terminal itself (see [`crate::cpr`]). Our own screen
+//! model (alacritty_terminal) can drift from the real screen (content
 //! from before we started, resize reflow, `clear`), so it is only the fallback for terminals that
 //! never answer, plus the source of alternate-screen state.
-
-use std::io::Write;
-use std::os::unix::net::UnixStream;
-use std::time::Duration;
 
 use alacritty_terminal::Term;
 use alacritty_terminal::event::VoidListener;
@@ -18,6 +13,9 @@ use alacritty_terminal::vte::ansi::Processor;
 use portable_pty::PtySize;
 use tflick_ipc::{Item, Kind, ToUi};
 
+use crate::cpr::take_cursor_reports;
+use crate::ui_client::UiClient;
+
 pub struct Popup {
     session: String,
     term: Term<VoidListener>,
@@ -26,7 +24,7 @@ pub struct Popup {
     /// The user is typing a command, so the popup should follow the cursor.
     active: bool,
     last_cursor: Option<(u16, u16)>,
-    conn: Option<UnixStream>,
+    ui: UiClient,
     /// Cursor position requests sent to the terminal and not answered yet.
     cpr_outstanding: u32,
     cpr_answered: bool,
@@ -34,9 +32,6 @@ pub struct Popup {
 
 /// Unanswered requests after which we assume the terminal doesn't support them.
 const CPR_GIVE_UP: u32 = 8;
-
-/// Asks the terminal for its cursor position; write this to the real terminal (stdout).
-pub const CURSOR_REQUEST: &[u8] = b"\x1b[6n";
 
 impl Popup {
     /// `cursor` is where the real terminal's cursor is when we start, (column, row): the screen
@@ -59,7 +54,7 @@ impl Popup {
             size,
             active: false,
             last_cursor: None,
-            conn: None,
+            ui: UiClient::default(),
             cpr_outstanding: 0,
             cpr_answered: false,
         }
@@ -106,7 +101,7 @@ impl Popup {
             let msg = ToUi::Hide {
                 session: self.session.clone(),
             };
-            self.send(&msg);
+            self.ui.send(&msg);
         } else if bytes.first() != Some(&0x1b) && bytes.iter().any(|&b| b >= 0x20) {
             // Escape sequences (arrows, function keys) are navigation, not typing.
             self.active = true;
@@ -114,7 +109,7 @@ impl Popup {
     }
 
     /// Called with every chunk of shell output, after it was written to the real terminal.
-    /// Returns true when the caller should write [`CURSOR_REQUEST`] to the real terminal.
+    /// Returns true when the caller should write [`crate::cpr::CURSOR_REQUEST`] to the real terminal.
     pub fn on_output(&mut self, bytes: &[u8]) -> bool {
         self.parser.advance(&mut self.term, bytes);
         if !self.should_show() {
@@ -156,56 +151,8 @@ impl Popup {
             grid: (s.cols, s.rows),
             cell_px,
         };
-        self.send(&msg);
+        self.ui.send(&msg);
     }
-
-    /// Never blocks the PTY for long: short write timeout, and a missing or dead UI is ignored
-    /// (reconnected on the next message).
-    fn send(&mut self, msg: &ToUi) {
-        if self.conn.is_none() {
-            self.conn = UnixStream::connect(tflick_ipc::socket_path()).ok();
-            if let Some(c) = &self.conn {
-                let _ = c.set_write_timeout(Some(Duration::from_millis(20)));
-            }
-        }
-        let Some(conn) = &mut self.conn else { return };
-        let mut line = serde_json::to_vec(msg).expect("ToUi serializes");
-        line.push(b'\n');
-        if conn.write_all(&line).is_err() {
-            self.conn = None;
-        }
-    }
-}
-
-/// Removes up to `max` cursor position reports (`ESC[row;colR`, 1-based) from `bytes`.
-/// Returns the remaining bytes and the reported positions as 0-based (column, row).
-/// ponytail: a report split across two reads is passed through to the shell; never seen in
-/// practice since terminals write the few bytes at once.
-fn take_cursor_reports(bytes: &[u8], max: u32) -> (Vec<u8>, Vec<(u16, u16)>) {
-    let mut rest = Vec::with_capacity(bytes.len());
-    let mut found = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if (found.len() as u32) < max
-            && let Some((len, pos)) = parse_cursor_report(&bytes[i..])
-        {
-            found.push(pos);
-            i += len;
-        } else {
-            rest.push(bytes[i]);
-            i += 1;
-        }
-    }
-    (rest, found)
-}
-
-/// `ESC [ row ; col R` at the start of `bytes` -> (length, (col - 1, row - 1)).
-fn parse_cursor_report(bytes: &[u8]) -> Option<(usize, (u16, u16))> {
-    let body = bytes.strip_prefix(b"\x1b[")?;
-    let end = body.iter().position(|&b| b == b'R')?;
-    let (row, col) = std::str::from_utf8(&body[..end]).ok()?.split_once(';')?;
-    let (row, col): (u16, u16) = (row.parse().ok()?, col.parse().ok()?);
-    Some((2 + end + 1, (col.saturating_sub(1), row.saturating_sub(1))))
 }
 
 /// ponytail: fixed list until the parser and specs exist (P3/P4).
@@ -318,14 +265,5 @@ mod tests {
         }
         assert!(!p.on_output(b"y"));
         assert_eq!(p.last_cursor, Some((CPR_GIVE_UP as u16 + 1, 5))); // 8 x + y
-    }
-
-    #[test]
-    fn parses_cursor_reports() {
-        let (rest, found) = take_cursor_reports(b"a\x1b[3;4Rb\x1b[10;1R\x1b[A", 5);
-        assert_eq!(rest, b"ab\x1b[A");
-        assert_eq!(found, vec![(3, 2), (0, 9)]);
-        let (rest, found) = take_cursor_reports(b"\x1b[3;4R", 0);
-        assert_eq!((rest.as_slice(), found.len()), (&b"\x1b[3;4R"[..], 0));
     }
 }
