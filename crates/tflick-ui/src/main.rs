@@ -15,7 +15,7 @@ use gpui::{
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div,
     point, prelude::*, px, rgba, size, svg,
 };
-use macos::Rect;
+use macos::{Anchor, Rect};
 use tflick_ipc::{Item, Kind, ToUi};
 
 const POPUP_W: f64 = 460.0;
@@ -77,20 +77,20 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-/// Where the popup's top-left corner goes, in global top-left coordinates: just under the
-/// cursor cell, flipped above it near the bottom of the screen, shifted left near the right edge.
+/// The cursor cell inside a terminal window, in global top-left coordinates.
 ///
 /// The text grid's origin inside the window is unknown (title bar, tab bar, padding vary per
 /// terminal), so we assume the grid is centered horizontally and sits at the bottom with the
 /// same padding as the sides: everything left over at the top is title bar + tabs.
-/// ponytail: heuristic; add per-terminal offsets in config, or the AX caret (P6), when it's off.
-fn popup_origin(
+/// Only right when the grid fills the window (iTerm2, Terminal.app, Ghostty…), not for terminals
+/// embedded in an editor panel; those (xterm.js) give us the real caret instead.
+/// ponytail: heuristic; add per-terminal offsets in config when it's off.
+fn caret_in_window(
     win: Rect,
     cursor: (u16, u16),
     grid: (u16, u16),
     cell_px: Option<(f32, f32)>,
-    screens: &[Rect],
-) -> (f64, f64) {
+) -> Rect {
     let (cols, rows) = (f64::from(grid.0.max(1)), f64::from(grid.1.max(1)));
     let (cw, ch) = match cell_px {
         Some((w, h)) => {
@@ -103,20 +103,28 @@ fn popup_origin(
     };
     let side = ((win.w - cols * cw) / 2.0).max(0.0);
     let top = (win.h - rows * ch - side).max(0.0);
-    let caret_x = win.x + side + f64::from(cursor.0) * cw;
-    let caret_y = win.y + top + f64::from(cursor.1) * ch;
+    Rect {
+        x: win.x + side + f64::from(cursor.0) * cw,
+        y: win.y + top + f64::from(cursor.1) * ch,
+        w: cw,
+        h: ch,
+    }
+}
 
+/// Where the popup's top-left corner goes: just under the caret, flipped above it near the
+/// bottom of the screen, shifted left near the right edge.
+fn popup_origin(caret: Rect, screens: &[Rect]) -> (f64, f64) {
     let screen = screens
         .iter()
-        .find(|s| caret_x >= s.x && caret_x < s.x + s.w && caret_y >= s.y && caret_y < s.y + s.h)
+        .find(|s| caret.x >= s.x && caret.x < s.x + s.w && caret.y >= s.y && caret.y < s.y + s.h)
         .or(screens.first())
         .copied()
-        .unwrap_or(win);
-    let mut y = caret_y + ch;
+        .unwrap_or(caret);
+    let mut y = caret.y + caret.h;
     if y + POPUP_H > screen.y + screen.h {
-        y = caret_y - POPUP_H;
+        y = caret.y - POPUP_H;
     }
-    let x = caret_x.min(screen.x + screen.w - POPUP_W).max(screen.x);
+    let x = caret.x.min(screen.x + screen.w - POPUP_W).max(screen.x);
     (x, y)
 }
 
@@ -180,11 +188,14 @@ impl Popup {
                             grid,
                             cell_px,
                         } => {
-                            let Some(win) = macos::focused_window_frame() else {
-                                continue;
+                            let caret = match macos::locate_terminal() {
+                                Some(Anchor::Caret(caret)) => caret,
+                                Some(Anchor::Window(win)) => {
+                                    caret_in_window(win, cursor, grid, cell_px)
+                                }
+                                None => continue,
                             };
-                            let (x, y) =
-                                popup_origin(win, cursor, grid, cell_px, &macos::screens());
+                            let (x, y) = popup_origin(caret, &macos::screens());
                             macos::show_at(&ns_window, x, y);
                             shown = Some(session);
                             update = Some((items, selected));
@@ -328,7 +339,7 @@ mod tests {
     };
 
     #[test]
-    fn below_cursor_with_title_bar_inferred() {
+    fn caret_with_title_bar_inferred() {
         // 80x24 grid of 8x16pt cells, 4pt side padding, 28pt title bar.
         let win = Rect {
             x: 100.0,
@@ -336,9 +347,16 @@ mod tests {
             w: 648.0,
             h: 28.0 + 384.0 + 4.0,
         };
-        let (x, y) = popup_origin(win, (10, 2), (80, 24), Some((8.0, 16.0)), &[SCREEN]);
-        assert_eq!(x, 100.0 + 4.0 + 80.0);
-        assert_eq!(y, 100.0 + 28.0 + 3.0 * 16.0);
+        let c = caret_in_window(win, (10, 2), (80, 24), Some((8.0, 16.0)));
+        assert_eq!(
+            c,
+            Rect {
+                x: 100.0 + 4.0 + 80.0,
+                y: 100.0 + 28.0 + 32.0,
+                w: 8.0,
+                h: 16.0
+            }
+        );
     }
 
     #[test]
@@ -349,22 +367,33 @@ mod tests {
             w: 648.0,
             h: 416.0,
         };
-        let points = popup_origin(win, (10, 2), (80, 24), Some((8.0, 16.0)), &[SCREEN]);
-        let pixels = popup_origin(win, (10, 2), (80, 24), Some((16.0, 32.0)), &[SCREEN]);
+        let points = caret_in_window(win, (10, 2), (80, 24), Some((8.0, 16.0)));
+        let pixels = caret_in_window(win, (10, 2), (80, 24), Some((16.0, 32.0)));
         assert_eq!(points, pixels);
     }
 
     #[test]
-    fn flips_above_near_screen_bottom_and_shifts_left_near_right_edge() {
-        let win = Rect {
-            x: 1000.0,
-            y: 500.0,
-            w: 648.0,
-            h: 416.0,
+    fn popup_goes_below_caret() {
+        let caret = Rect {
+            x: 300.0,
+            y: 200.0,
+            w: 8.0,
+            h: 16.0,
         };
-        let (x, y) = popup_origin(win, (79, 23), (80, 24), Some((8.0, 16.0)), &[SCREEN]);
-        let caret_y = 500.0 + 28.0 + 23.0 * 16.0;
-        assert_eq!(y, caret_y - POPUP_H);
-        assert_eq!(x, SCREEN.w - POPUP_W);
+        assert_eq!(popup_origin(caret, &[SCREEN]), (300.0, 216.0));
+    }
+
+    #[test]
+    fn flips_above_near_screen_bottom_and_shifts_left_near_right_edge() {
+        let caret = Rect {
+            x: 1400.0,
+            y: 900.0,
+            w: 8.0,
+            h: 16.0,
+        };
+        assert_eq!(
+            popup_origin(caret, &[SCREEN]),
+            (SCREEN.w - POPUP_W, 900.0 - POPUP_H)
+        );
     }
 }

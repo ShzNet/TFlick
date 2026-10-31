@@ -5,14 +5,16 @@
 //! screen, y down. Cocoa (NSWindow, NSScreen) uses the BOTTOM-left, y up.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use accessibility_sys::{
     AXIsProcessTrustedWithOptions, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-    AXUIElementRef, AXValueGetValue, AXValueRef, kAXErrorSuccess, kAXFocusedWindowAttribute,
-    kAXPositionAttribute, kAXSizeAttribute, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint,
-    kAXValueTypeCGSize,
+    AXUIElementRef, AXUIElementSetAttributeValue, AXValueGetValue, AXValueRef, kAXErrorSuccess,
+    kAXFocusedUIElementAttribute, kAXFocusedWindowAttribute, kAXPositionAttribute,
+    kAXSizeAttribute, kAXTrustedCheckOptionPrompt, kAXValueTypeCGPoint, kAXValueTypeCGSize,
 };
-use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::array::{CFArray, CFArrayRef};
+use core_foundation::base::{CFRelease, CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::CFString;
@@ -127,34 +129,107 @@ fn primary_screen_height() -> f64 {
         .map_or(0.0, |s| s.frame().size.height)
 }
 
-/// Frame of the focused window of the frontmost app (the terminal the user is typing in).
-pub fn focused_window_frame() -> Option<Rect> {
+/// Where the user is typing, as precisely as we can tell.
+pub enum Anchor {
+    /// The cursor cell itself (xterm.js terminals: VSCode, Cursor, Hyper…).
+    Caret(Rect),
+    /// Only the terminal window; the cursor cell has to be inferred from the grid.
+    Window(Rect),
+}
+
+/// Pid we last turned Electron's accessibility tree on for.
+static ELECTRON_AX_PID: AtomicI32 = AtomicI32::new(-1);
+
+/// Locates the terminal the user is typing in (the frontmost app).
+pub fn locate_terminal() -> Option<Anchor> {
     let pid = NSWorkspace::sharedWorkspace()
         .frontmostApplication()?
         .processIdentifier();
-    // SAFETY: every Copy/Create result is released exactly once below; AXValue reads write into
-    // correctly sized #[repr(C)] structs.
+    // SAFETY: every Copy/Create result is released exactly once below.
     unsafe {
         let app = AXUIElementCreateApplication(pid);
-        let window = copy_attr(app, kAXFocusedWindowAttribute);
+        // Electron apps (VSCode…) only build their AX tree when asked to. Harmless elsewhere.
+        // The tree is built asynchronously, so the very first lookup may still miss.
+        if ELECTRON_AX_PID.swap(pid, Ordering::Relaxed) != pid {
+            let attr = CFString::from_static_string("AXManualAccessibility");
+            AXUIElementSetAttributeValue(
+                app,
+                attr.as_concrete_TypeRef(),
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
+        }
+        let caret = copy_attr(app, kAXFocusedUIElementAttribute).and_then(|el| {
+            let caret = xterm_caret(el as AXUIElementRef);
+            CFRelease(el);
+            caret
+        });
+        let anchor = match caret {
+            Some(c) => Some(Anchor::Caret(c)),
+            None => copy_attr(app, kAXFocusedWindowAttribute)
+                .and_then(|w| {
+                    let r = frame(w as AXUIElementRef);
+                    CFRelease(w);
+                    r
+                })
+                .map(Anchor::Window),
+        };
         CFRelease(app as CFTypeRef);
-        let window = window? as AXUIElementRef;
-        let pos = copy_attr(window, kAXPositionAttribute);
-        let size = copy_attr(window, kAXSizeAttribute);
-        CFRelease(window as CFTypeRef);
-        let (pos, size) = (pos?, size?);
-        let mut p = CGPoint { x: 0.0, y: 0.0 };
-        let mut s = CGSize { w: 0.0, h: 0.0 };
-        let ok = AXValueGetValue(pos as AXValueRef, kAXValueTypeCGPoint, (&raw mut p).cast())
-            && AXValueGetValue(size as AXValueRef, kAXValueTypeCGSize, (&raw mut s).cast());
-        CFRelease(pos);
-        CFRelease(size);
-        ok.then_some(Rect {
-            x: p.x,
-            y: p.y,
-            w: s.w,
-            h: s.h,
-        })
+        anchor
+    }
+}
+
+/// xterm.js keeps a hidden `xterm-helper-textarea` on the cursor cell (for IME), so its frame
+/// is the caret. port: macos-utils/src/window_server/ui_element.rs `find_x_term_caret_tree`.
+unsafe fn xterm_caret(element: AXUIElementRef) -> Option<Rect> {
+    // SAFETY: a +1 CFArray from copy_attr, released when `classes` drops.
+    let classes = unsafe {
+        CFArray::<CFType>::wrap_under_create_rule(
+            copy_attr(element, "AXDOMClassList")? as CFArrayRef
+        )
+    };
+    let is_xterm = classes.iter().any(|c| {
+        c.downcast::<CFString>()
+            .is_some_and(|s| s == "xterm-helper-textarea")
+    });
+    // SAFETY: `element` is a valid AX element owned by the caller.
+    if is_xterm {
+        unsafe { frame(element) }
+    } else {
+        None
+    }
+}
+
+/// Position and size of an AX element, in global top-left coordinates.
+unsafe fn frame(element: AXUIElementRef) -> Option<Rect> {
+    // SAFETY: Copy results are released exactly once; AXValue reads write into correctly sized
+    // #[repr(C)] structs.
+    unsafe {
+        let pos = copy_attr(element, kAXPositionAttribute);
+        let size = copy_attr(element, kAXSizeAttribute);
+        let r = match (pos, size) {
+            (Some(pos), Some(size)) => {
+                let mut p = CGPoint { x: 0.0, y: 0.0 };
+                let mut s = CGSize { w: 0.0, h: 0.0 };
+                let ok =
+                    AXValueGetValue(pos as AXValueRef, kAXValueTypeCGPoint, (&raw mut p).cast())
+                        && AXValueGetValue(
+                            size as AXValueRef,
+                            kAXValueTypeCGSize,
+                            (&raw mut s).cast(),
+                        );
+                ok.then_some(Rect {
+                    x: p.x,
+                    y: p.y,
+                    w: s.w,
+                    h: s.h,
+                })
+            }
+            _ => None,
+        };
+        for v in [pos, size].into_iter().flatten() {
+            CFRelease(v);
+        }
+        r
     }
 }
 

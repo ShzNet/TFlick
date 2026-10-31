@@ -68,7 +68,6 @@ fn main() -> Result<()> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let session = format!("{}-{nanos}", process::id());
     cmd.env("TFLICK_SESSION_ID", &session);
-    let popup = Arc::new(Mutex::new(ui::Popup::new(session, pty_size())));
 
     let mut child = pair.slave.spawn_command(cmd)?;
     // Drop our copy of the slave so the reader sees EOF once the shell exits.
@@ -79,6 +78,14 @@ fn main() -> Result<()> {
     let mut writer = master.take_writer()?;
 
     let raw = RawMode::enable()?;
+    // Ask the real terminal where its cursor is (DSR). Must happen before the stdin thread starts
+    // reading, since the answer arrives on stdin. Times out (None) on terminals that don't reply.
+    let start_cursor = crossterm::cursor::position().ok();
+    let popup = Arc::new(Mutex::new(ui::Popup::new(
+        session,
+        pty_size(),
+        start_cursor,
+    )));
 
     // stdin -> pty. Blocks on read forever; the process exits without joining it.
     let input_popup = popup.clone();

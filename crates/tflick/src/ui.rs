@@ -24,12 +24,23 @@ pub struct Popup {
 }
 
 impl Popup {
-    pub fn new(session: String, size: PtySize) -> Self {
+    /// `cursor` is where the real terminal's cursor is when we start, (column, row): the screen
+    /// usually already has content above (login banner, earlier commands).
+    pub fn new(session: String, size: PtySize, cursor: Option<(u16, u16)>) -> Self {
         let dims = TermSize::new(size.cols.into(), size.rows.into());
+        let mut term = Term::new(Config::default(), &dims, VoidListener);
+        let mut parser = Processor::new();
+        if let Some((col, row)) = cursor {
+            // CUP is 1-based.
+            parser.advance(
+                &mut term,
+                format!("\x1b[{};{}H", row + 1, col + 1).as_bytes(),
+            );
+        }
         Self {
             session,
-            term: Term::new(Config::default(), &dims, VoidListener),
-            parser: Processor::new(),
+            term,
+            parser,
             size,
             active: false,
             last_cursor: None,
@@ -163,15 +174,23 @@ mod tests {
 
     #[test]
     fn tracks_cursor_after_output() {
-        let mut p = Popup::new("s".into(), size());
+        let mut p = Popup::new("s".into(), size(), None);
         p.parser.advance(&mut p.term, b"line1\r\n$ git co");
         let point = p.term.grid().cursor.point;
         assert_eq!((point.column.0, point.line.0), (8, 1));
     }
 
     #[test]
+    fn starts_at_the_real_cursor_position() {
+        let mut p = Popup::new("s".into(), size(), Some((0, 8)));
+        p.parser.advance(&mut p.term, b"$ hi");
+        let point = p.term.grid().cursor.point;
+        assert_eq!((point.column.0, point.line.0), (4, 8));
+    }
+
+    #[test]
     fn enter_deactivates_and_typing_activates() {
-        let mut p = Popup::new("s".into(), size());
+        let mut p = Popup::new("s".into(), size(), None);
         p.on_input(b"g");
         assert!(p.active);
         p.on_input(b"\r");
@@ -182,7 +201,7 @@ mod tests {
 
     #[test]
     fn alt_screen_never_shows() {
-        let mut p = Popup::new("s".into(), size());
+        let mut p = Popup::new("s".into(), size(), None);
         p.on_input(b"x");
         p.on_output(b"\x1b[?1049h"); // enter alternate screen, like vim
         assert_eq!(p.last_cursor, None);
