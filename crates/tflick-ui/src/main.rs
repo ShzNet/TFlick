@@ -2,33 +2,106 @@
 //! changes its content and toggles visibility, to measure flicker, CPU and latency.
 //! `cargo run -p tflick-ui` then watch; click the popup and check the app behind keeps focus.
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Application, Bounds, Context, FontWeight, SharedString, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, point, prelude::*,
-    px, rgba, size,
+    App, Application, AssetSource, Bounds, Context, FontWeight, SharedString, Window,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div,
+    point, prelude::*, px, rgba, size, svg,
 };
 use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSView, NSWindow};
 use objc2_foundation::NSPoint;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-const ITEMS: [(&str, &str); 8] = [
-    ("checkout", "Switch branches or restore working tree files"),
+/// Suggestion kinds, matching Fig's suggestion types; each has an icon and an accent color.
+#[derive(Clone, Copy)]
+enum Kind {
+    Subcommand,
+    Option,
+    Arg,
+    Folder,
+    File,
+    Branch,
+    History,
+}
+
+impl Kind {
+    fn icon(self) -> &'static str {
+        match self {
+            Kind::Subcommand => "icons/subcommand.svg",
+            Kind::Option => "icons/option.svg",
+            Kind::Arg => "icons/arg.svg",
+            Kind::Folder => "icons/folder.svg",
+            Kind::File => "icons/file.svg",
+            Kind::Branch => "icons/branch.svg",
+            Kind::History => "icons/history.svg",
+        }
+    }
+
+    /// Accent color 0xRRGGBB00, alpha added by the caller.
+    fn color(self) -> u32 {
+        match self {
+            Kind::Subcommand => 0x8b5cf600,
+            Kind::Option => 0x3b82f600,
+            Kind::Arg => 0x14b8a600,
+            Kind::Folder => 0xf59e0b00,
+            Kind::File => 0x64748b00,
+            Kind::Branch => 0xf9731600,
+            Kind::History => 0x22c55e00,
+        }
+    }
+}
+
+/// Icons are embedded in the binary, so the popup works from any working directory.
+struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        let bytes: &'static [u8] = match path {
+            "icons/subcommand.svg" => include_bytes!("../icons/subcommand.svg"),
+            "icons/option.svg" => include_bytes!("../icons/option.svg"),
+            "icons/arg.svg" => include_bytes!("../icons/arg.svg"),
+            "icons/folder.svg" => include_bytes!("../icons/folder.svg"),
+            "icons/file.svg" => include_bytes!("../icons/file.svg"),
+            "icons/branch.svg" => include_bytes!("../icons/branch.svg"),
+            "icons/history.svg" => include_bytes!("../icons/history.svg"),
+            _ => return Ok(None),
+        };
+        Ok(Some(Cow::Borrowed(bytes)))
+    }
+
+    fn list(&self, _path: &str) -> anyhow::Result<Vec<SharedString>> {
+        Ok(Vec::new())
+    }
+}
+
+const ITEMS: [(Kind, &str, &str); 8] = [
     (
-        "cherry-pick",
-        "Apply the changes introduced by some existing commits",
+        Kind::Subcommand,
+        "checkout",
+        "Switch branches or restore working tree files",
     ),
-    ("clean", "Remove untracked files from the working tree"),
-    ("clone", "Clone a repository into a new directory"),
-    ("commit", "Record changes to the repository"),
-    ("config", "Get and set repository or global options"),
     (
-        "diff",
-        "Show changes between commits, commit and working tree",
+        Kind::Subcommand,
+        "commit",
+        "Record changes to the repository",
     ),
-    ("fetch", "Download objects and refs from another repository"),
+    (
+        Kind::Option,
+        "--amend",
+        "Replace the tip of the current branch",
+    ),
+    (
+        Kind::Arg,
+        "<pathspec>",
+        "Limit the paths affected by the operation",
+    ),
+    (Kind::Folder, "src/", "Folder"),
+    (Kind::File, "Cargo.toml", "File"),
+    (Kind::Branch, "main", "Branch · 2 hours ago"),
+    (Kind::History, "git commit -m \"wip\"", "From history"),
 ];
 
 struct Popup {
@@ -101,7 +174,7 @@ fn follow_mouse(ns_window: &NSWindow, visible: bool) {
 impl Popup {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let ns_window = ns_window(window).expect("gpui window has an NSWindow");
-        set_blur(&ns_window, env_or("TFLICK_BLUR", 50));
+        set_blur(&ns_window, env_or("TFLICK_BLUR", 30));
         cx.spawn_in(window, async move |this, cx| {
             let mut tick = 0usize;
             loop {
@@ -136,7 +209,7 @@ impl Popup {
         .detach();
         Self {
             tick: 0,
-            tint: env_or("TFLICK_TINT", 0xd0u32).min(255),
+            tint: env_or("TFLICK_TINT", 0xa0u32).min(255),
             max_frame: Duration::ZERO,
             last_scale: 0.0,
         }
@@ -144,26 +217,55 @@ impl Popup {
 }
 
 impl Render for Popup {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // Follow the system theme like native menus: a light popup with dark text in light mode,
+        // so text stays readable over the light apps behind it, and the reverse in dark mode.
+        // ponytail: picks colors from the system theme, not from what is actually behind the
+        // popup; a dark app under a light-mode popup still relies on the tint for contrast.
+        let dark = matches!(
+            window.appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        );
+        let (bg, fg) = if dark {
+            (0x1e1e2200, 0xffffff00)
+        } else {
+            (0xf5f5f700, 0x1d1d1f00)
+        };
         // Rotate items so content changes every tick, like a real popup while typing.
         let selected = (self.tick / 10) % ITEMS.len();
         let rows = (0..ITEMS.len()).map(|i| {
-            let (name, desc) = ITEMS[(i + self.tick / 20) % ITEMS.len()];
+            let (kind, name, desc) = ITEMS[(i + self.tick / 20) % ITEMS.len()];
+            let is_selected = i == selected;
+            // Bare icon in the kind's accent color (white on the selected row).
+            let icon = svg()
+                .flex_none()
+                .path(kind.icon())
+                .size_4()
+                .text_color(rgba(if is_selected {
+                    0xffffffff
+                } else {
+                    kind.color() | 0xff
+                }));
             div()
                 .flex()
-                .gap_3()
+                .items_center()
+                .gap_2()
                 .px_2()
                 .py_0p5()
                 .rounded_md()
-                .when(i == selected, |d| d.bg(rgba(0x3b82f6cc)))
+                .when(i == selected, |d| {
+                    d.bg(rgba(0x3b82f6ff)).text_color(rgba(0xffffffff))
+                })
+                .child(icon)
                 .child(
                     div()
+                        .flex_none()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(SharedString::from(name)),
                 )
                 .child(
                     div()
-                        .text_color(rgba(0xffffff99))
+                        .when(i != selected, |d| d.text_color(rgba(fg | 0xaa)))
                         .truncate()
                         .child(SharedString::from(desc)),
                 )
@@ -173,9 +275,9 @@ impl Render for Popup {
             .p_1()
             .rounded_lg()
             .border_1()
-            .border_color(rgba(0xffffff22))
-            .bg(rgba(0x1e1e2200 | self.tint))
-            .text_color(rgba(0xffffffee))
+            .border_color(rgba(fg | 0x22))
+            .bg(rgba(bg | self.tint))
+            .text_color(rgba(fg | 0xff))
             .text_sm()
             .font_family(".SystemUIFont")
             .flex()
@@ -185,7 +287,7 @@ impl Render for Popup {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    Application::new().with_assets(Assets).run(|cx: &mut App| {
         let bounds = Bounds {
             origin: point(px(200.), px(200.)),
             size: size(px(460.), px(230.)),

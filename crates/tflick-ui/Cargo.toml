@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 # runtime_shaders: no Metal Toolchain needed to build (xcodebuild -downloadComponent MetalToolchain for precompiled).
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 raw-window-handle = "0.6"
