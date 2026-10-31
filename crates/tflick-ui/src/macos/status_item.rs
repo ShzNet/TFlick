@@ -5,13 +5,19 @@ use std::sync::mpsc::Sender;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{
+    AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
+};
 use objc2_app_kit::{NSApplication, NSImage, NSMenu, NSMenuItem, NSStatusBar};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSString, ns_string};
+use objc2_foundation::{NSData, NSObject, NSObjectProtocol, NSSize, NSString, ns_string};
 use tflick_ipc::ToUi;
 
 /// Length of a status item sized to its content (`NSVariableStatusItemLength`).
 const VARIABLE_LENGTH: f64 = -1.0;
+
+/// The SHZ mark (icons/shz-mark.svg) as a one-color template, 18pt at 2x; its center dot is a
+/// hole since template images only use alpha.
+const ICON: &[u8] = include_bytes!("../../icons/shz-menubar.png");
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements, and MenuTarget does not implement Drop.
@@ -74,17 +80,14 @@ pub fn install_status_item(tx: Sender<ToUi>) {
 
     let status = NSStatusBar::systemStatusBar().statusItemWithLength(VARIABLE_LENGTH);
     if let Some(button) = status.button(mtm) {
-        // An SF Symbol, drawn as a template so it follows the menu bar's light/dark look.
-        let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            ns_string!("text.cursor"),
-            Some(ns_string!("TFlick")),
-        );
-        match image {
+        // A template image follows the menu bar's light/dark look like system icons do.
+        match NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(ICON)) {
             Some(image) => {
+                image.setSize(NSSize::new(18.0, 18.0));
                 image.setTemplate(true);
                 button.setImage(Some(&image));
             }
-            None => button.setTitle(ns_string!("TF")),
+            None => button.setTitle(ns_string!("TFlick")),
         }
     }
     status.setMenu(Some(&menu));

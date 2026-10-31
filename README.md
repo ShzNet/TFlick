@@ -145,7 +145,7 @@ tflick init fish | source     # trong config.fish
 
 ## Cài đặt (giao diện)
 
-Bấm icon **A|** của TFlick trên thanh menu → **Cài đặt TFlick…** (⌘,). Hoặc từ dòng lệnh: `tflick settings`. Menu đó cũng có **Thoát TFlick** để tắt `tflick-ui`.
+Bấm logo **SHZ** trên thanh menu → **Cài đặt TFlick…** (⌘,). Hoặc từ dòng lệnh: `tflick settings`. Menu đó cũng có **Thoát TFlick** để tắt `tflick-ui`.
 
 Giống dashboard của Amazon Q, gồm các trang:
 
