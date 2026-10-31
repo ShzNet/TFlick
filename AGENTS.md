@@ -13,7 +13,9 @@ TFlick: terminal autocomplete kiểu Fig / Amazon Q, viết bằng Rust, ưu ti�
 ## Cấu trúc
 ```
 crates/tflick/src/       main (nối thread) · tty (terminal thật, raw mode, unsafe)
-                         popup (quyết định hiện gì) · cpr (parse báo cáo con trỏ) · ui_client (socket)
+                         popup (quyết định hiện gì) · screen (model màn hình + edit buffer)
+                         osc (tách OSC 697) · shell (sự kiện OSC 697) · cpr (báo cáo con trỏ)
+                         ui_client (socket)
 crates/tflick-ui/src/    main (khởi động) · controller (vòng poll, nơi duy nhất ghép IPC + AX + cửa sổ)
                          follow, layout (logic thuần, có test) · view (giao diện gpui)
                          ipc (socket) · macos/{window,ax} (glue hệ điều hành, unsafe)
@@ -25,7 +27,7 @@ refs/                    repo tham khảo, CHỈ ĐỌC, không sửa, không bu
 ```
 
 ### Phân tầng (functional core, imperative shell)
-- **Lõi thuần**: quyết định và tính toán (`layout`, `follow`, `cpr`, sau này parser/engine). Không gọi OS, không I/O, nhận dữ liệu quan sát được và trả về kết quả/lệnh (`follow::Cmd`). Mọi logic có nhánh đặt ở đây và có unit test.
+- **Lõi thuần**: quyết định và tính toán (`layout`, `follow`, `cpr`, `osc`, `shell`, `screen`, sau này parser/engine). Không gọi OS, không I/O, nhận dữ liệu quan sát được và trả về kết quả/lệnh (`follow::Cmd`). Mọi logic có nhánh đặt ở đây và có unit test.
 - **Vỏ I/O**: `tty`, `ui_client`, `ipc`, `macos/*`. Mỏng, không chứa quyết định, gom hết `unsafe`.
 - **Điều phối**: `main`, `controller`. Đọc từ vỏ I/O, đưa vào lõi, thực thi lệnh lõi trả về.
 - Phụ thuộc chỉ đi từ ngoài vào trong: lõi không `use` vỏ I/O hay điều phối; `view` không biết định vị.

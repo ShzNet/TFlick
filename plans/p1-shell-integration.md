@@ -2,6 +2,14 @@
 
 **Mục tiêu:** `tflick` luôn biết người dùng đang ở prompt hay đang chạy lệnh, cwd hiện tại, chuỗi lệnh đang gõ và vị trí cursor trong chuỗi đó.
 **Ước lượng:** 3–5 ngày · **Phụ thuộc:** P0
+**Trạng thái (2026-10-31):** 🟡 code xong (`shell/tflick.zsh`, `crates/tflick/src/{osc,shell,screen}.rs`), unit test pass, script đã chạy thử trong zsh thật qua pty. Chờ thử tay trong terminal (các mục chưa tick).
+
+### Khác với Q (vì dùng alacritty_terminal bản gốc, không fork)
+- **Cuộn màn hình:** Q dời `cmd_cursor` trong hàm scroll của fork. Ta lưu điểm bắt đầu lệnh theo dòng tuyệt đối (dòng + độ dài scrollback) và xoá scrollback của model ở mỗi `NewCmd`.
+- **RPROMPT/PS2:** Q gắn cờ `IN_PROMPT` vào từng ô. Ta chụp lại các ô prompt vẽ sau `NewCmd` (vị trí + ký tự) và bỏ những ô còn giữ nguyên ký tự đó.
+- **Wrap:** nối dòng theo cờ `WRAPLINE` (giữ được dấu cách đúng ở chỗ wrap), Q thì luôn bỏ khoảng trắng cuối dòng.
+- Bỏ `OSCLock/OSCUnlock`, `pre-cmd --alias`, `DoneSourcing`; script chỉ chạy khi `TFLICK_TTY` trùng `$TTY`.
+- Có tích hợp: popup hiện khi edit buffer có chữ. Chưa có (chưa `eval`): vẫn đoán từ phím như trước.
 
 ## Cách Q làm (đã đọc code)
 - Shell script phát **OSC 697** (`ESC ] 697 ; <payload> BEL`):
@@ -37,7 +45,7 @@
 - [ ] Lệnh dài bị wrap sang dòng dưới: buffer liền mạch.
 - [ ] Đang chạy `vim` hay `sleep 10`: không có edit buffer.
 - [ ] `cd /tmp` xong thì `cwd` cập nhật thành `/tmp`.
-- [ ] Unit test cho hàm edit buffer: dựng `Term` từ chuỗi byte cố định, không cần PTY thật.
+- [x] Unit test cho hàm edit buffer: dựng `Term` từ chuỗi byte cố định, không cần PTY thật (kể cả output zsh thật có RPROMPT, wrap + cuộn, autosuggestion).
 
 ## Rủi ro
 - `alacritty_terminal` upstream có thể không cho truy cập cell/màu đủ dễ → copy phần cần thiết từ fork của Q.

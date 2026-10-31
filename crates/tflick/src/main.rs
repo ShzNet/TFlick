@@ -2,10 +2,17 @@
 //! [`popup::Popup`] which tells `tflick-ui` where the cursor is.
 //!
 //! Modules: `main` wires the threads; `tty` is the real terminal (all `unsafe` lives there);
-//! `popup` decides what to show; `cpr` parses cursor reports; `ui_client` talks to `tflick-ui`.
+//! `popup` decides what to show; `screen` models the screen and reads the edit buffer, from
+//! `osc` (OSC 697 splitting) and `shell` (its events); `cpr` parses cursor reports;
+//! `ui_client` talks to `tflick-ui`.
+//!
+//! `tflick init zsh` prints the shell integration, for `eval "$(tflick init zsh)"` in .zshrc.
 
 mod cpr;
+mod osc;
 mod popup;
+mod screen;
+mod shell;
 mod tty;
 mod ui_client;
 
@@ -24,6 +31,16 @@ use signal_hook::iterator::Signals;
 fn main() -> Result<()> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let args: Vec<_> = env::args_os().skip(1).collect();
+
+    if args.first().is_some_and(|a| a == "init") {
+        return match args.get(1).and_then(|s| s.to_str()) {
+            Some("zsh") => {
+                print!("{}", include_str!("../../../shell/tflick.zsh"));
+                Ok(())
+            }
+            other => anyhow::bail!("tflick init: unsupported shell {other:?} (only zsh for now)"),
+        };
+    }
 
     // Already inside tflick: become the shell instead of nesting a second PTY. Compare ttys, not
     // just an env var: TFLICK* vars leak into anything launched from a tflick shell (e.g. `code .`

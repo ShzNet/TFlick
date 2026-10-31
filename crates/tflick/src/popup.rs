@@ -1,68 +1,62 @@
-//! Decides when the popup shows and where the cursor is, and tells `tflick-ui`.
+//! Decides when the popup shows and where, and tells `tflick-ui`.
 //!
-//! The cursor position comes from the real terminal itself (see [`crate::cpr`]). Our own screen
-//! model (alacritty_terminal) can drift from the real screen (content
-//! from before we started, resize reflow, `clear`), so it is only the fallback for terminals that
-//! never answer, plus the source of alternate-screen state.
+//! With the shell integration loaded, the popup shows while the edit buffer (see
+//! [`crate::screen`]) has text. Without it, typing is guessed from raw keys.
+//! The cursor position comes from the real terminal itself (see [`crate::cpr`]): our screen model
+//! can drift from the real screen (content from before we started, resize reflow, `clear`), so
+//! its cursor is only the fallback for terminals that never answer.
 
-use alacritty_terminal::Term;
-use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::term::test::TermSize;
-use alacritty_terminal::term::{Config, TermMode};
-use alacritty_terminal::vte::ansi::Processor;
+use std::fs::File;
+use std::io::Write;
+
 use portable_pty::PtySize;
 use tflick_ipc::{Item, Kind, ToUi};
 
 use crate::cpr::take_cursor_reports;
+use crate::screen::{EditBuffer, Screen};
 use crate::ui_client::UiClient;
 
 pub struct Popup {
     session: String,
-    term: Term<VoidListener>,
-    parser: Processor,
+    screen: Screen,
     size: PtySize,
-    /// The user is typing a command, so the popup should follow the cursor.
-    active: bool,
+    /// Without the shell integration: the user seems to be typing a command.
+    typing: bool,
+    /// Where the popup was last shown; None while hidden.
     last_cursor: Option<(u16, u16)>,
+    last_buffer: Option<EditBuffer>,
     ui: UiClient,
     /// Cursor position requests sent to the terminal and not answered yet.
     cpr_outstanding: u32,
     cpr_answered: bool,
+    /// `TFLICK_LOG=/tmp/tflick.log`: edit buffer changes, as `text|cursor`.
+    log: Option<File>,
 }
 
 /// Unanswered requests after which we assume the terminal doesn't support them.
 const CPR_GIVE_UP: u32 = 8;
 
 impl Popup {
-    /// `cursor` is where the real terminal's cursor is when we start, (column, row): the screen
-    /// usually already has content above (login banner, earlier commands).
+    /// `cursor` is where the real terminal's cursor is when we start, (column, row).
     pub fn new(session: String, size: PtySize, cursor: Option<(u16, u16)>) -> Self {
-        let dims = TermSize::new(size.cols.into(), size.rows.into());
-        let mut term = Term::new(Config::default(), &dims, VoidListener);
-        let mut parser = Processor::new();
-        if let Some((col, row)) = cursor {
-            // CUP is 1-based.
-            parser.advance(
-                &mut term,
-                format!("\x1b[{};{}H", row + 1, col + 1).as_bytes(),
-            );
-        }
+        let log = std::env::var_os("TFLICK_LOG")
+            .and_then(|path| File::options().create(true).append(true).open(path).ok());
         Self {
+            screen: Screen::new(session.clone(), size.cols, size.rows, cursor),
             session,
-            term,
-            parser,
             size,
-            active: false,
+            typing: false,
             last_cursor: None,
+            last_buffer: None,
             ui: UiClient::default(),
             cpr_outstanding: 0,
             cpr_answered: false,
+            log,
         }
     }
 
     pub fn resize(&mut self, size: PtySize) {
-        self.term
-            .resize(TermSize::new(size.cols.into(), size.rows.into()));
+        self.screen.resize(size.cols, size.rows);
         self.size = size;
         self.last_cursor = None;
     }
@@ -89,30 +83,31 @@ impl Popup {
         keys
     }
 
-    /// ponytail: guesses "typing a command" from raw keys; replace with OSC 697 prompt state (P1).
+    /// Enter, Ctrl-C, Ctrl-D and a lone Esc end the command: hide right away rather than wait
+    /// for the shell's output.
+    /// ponytail: without the shell integration, "typing" is guessed from raw keys.
     fn on_keys(&mut self, bytes: &[u8]) {
         let ends_command = bytes
             .iter()
             .any(|&b| matches!(b, b'\r' | b'\n' | 0x03 | 0x04))
             || bytes == b"\x1b";
         if ends_command {
-            self.active = false;
-            self.last_cursor = None;
-            let msg = ToUi::Hide {
-                session: self.session.clone(),
-            };
-            self.ui.send(&msg);
+            self.typing = false;
+            self.hide();
         } else if bytes.first() != Some(&0x1b) && bytes.iter().any(|&b| b >= 0x20) {
             // Escape sequences (arrows, function keys) are navigation, not typing.
-            self.active = true;
+            self.typing = true;
         }
     }
 
     /// Called with every chunk of shell output, after it was written to the real terminal.
-    /// Returns true when the caller should write [`crate::cpr::CURSOR_REQUEST`] to the real terminal.
+    /// Returns true when the caller should write [`crate::cpr::CURSOR_REQUEST`] to the real
+    /// terminal.
     pub fn on_output(&mut self, bytes: &[u8]) -> bool {
-        self.parser.advance(&mut self.term, bytes);
+        self.screen.feed(bytes);
+        self.log_buffer();
         if !self.should_show() {
+            self.hide();
             return false;
         }
         if self.cpr_answered || self.cpr_outstanding < CPR_GIVE_UP {
@@ -121,14 +116,33 @@ impl Popup {
             return true;
         }
         // The terminal never answers: fall back to our own screen model.
-        let point = self.term.grid().cursor.point;
-        self.show((point.column.0 as u16, point.line.0.max(0) as u16));
+        self.show(self.screen.cursor());
         false
     }
 
-    /// Full-screen apps (vim, less, htop) use the alternate screen: never show there.
     fn should_show(&self) -> bool {
-        self.active && !self.term.mode().contains(TermMode::ALT_SCREEN)
+        if self.screen.alt_screen() {
+            return false;
+        }
+        if self.screen.integrated() {
+            self.screen
+                .edit_buffer()
+                .is_some_and(|b| !b.text.trim().is_empty())
+        } else {
+            self.typing
+        }
+    }
+
+    fn log_buffer(&mut self) {
+        let Some(log) = &mut self.log else { return };
+        let buffer = self.screen.edit_buffer();
+        if buffer != self.last_buffer {
+            let _ = match &buffer {
+                Some(b) => writeln!(log, "{}|{}", b.text, b.cursor),
+                None => writeln!(log, "(none)"),
+            };
+            self.last_buffer = buffer;
+        }
     }
 
     fn show(&mut self, cursor: (u16, u16)) {
@@ -152,6 +166,15 @@ impl Popup {
             cell_px,
         };
         self.ui.send(&msg);
+    }
+
+    fn hide(&mut self) {
+        if self.last_cursor.take().is_some() {
+            let msg = ToUi::Hide {
+                session: self.session.clone(),
+            };
+            self.ui.send(&msg);
+        }
     }
 }
 
@@ -204,30 +227,35 @@ mod tests {
     }
 
     #[test]
-    fn tracks_cursor_after_output() {
-        let mut p = Popup::new("s".into(), size(), None);
-        p.parser.advance(&mut p.term, b"line1\r\n$ git co");
-        let point = p.term.grid().cursor.point;
-        assert_eq!((point.column.0, point.line.0), (8, 1));
+    fn starts_at_the_real_cursor_position() {
+        let mut p = Popup::new("s".into(), size(), Some((0, 8)));
+        p.on_output(b"$ hi");
+        assert_eq!(p.screen.cursor(), (4, 8));
     }
 
     #[test]
-    fn starts_at_the_real_cursor_position() {
-        let mut p = Popup::new("s".into(), size(), Some((0, 8)));
-        p.parser.advance(&mut p.term, b"$ hi");
-        let point = p.term.grid().cursor.point;
-        assert_eq!((point.column.0, point.line.0), (4, 8));
+    fn with_the_integration_shows_only_while_the_command_has_text() {
+        let mut p = Popup::new("s".into(), size(), None);
+        let prompt = b"\x1b]697;StartPrompt\x07$ \x1b]697;EndPrompt\x07\x1b]697;NewCmd=s\x07";
+        assert!(!p.on_output(prompt));
+        p.on_input(b" ");
+        assert!(!p.on_output(b" ")); // only a space
+        assert!(p.on_output(b"g"));
+        p.on_input(b"\x1b[1;5R");
+        assert_eq!(p.last_cursor, Some((4, 0)));
+        assert!(!p.on_output(b"\x08\x08\x1b[K")); // erased again: hidden
+        assert_eq!(p.last_cursor, None);
     }
 
     #[test]
     fn enter_deactivates_and_typing_activates() {
         let mut p = Popup::new("s".into(), size(), None);
         p.on_input(b"g");
-        assert!(p.active);
+        assert!(p.typing);
         p.on_input(b"\r");
-        assert!(!p.active);
+        assert!(!p.typing);
         p.on_input(b"\x1b[A"); // arrow up browses history, not typing
-        assert!(!p.active);
+        assert!(!p.typing);
     }
 
     #[test]

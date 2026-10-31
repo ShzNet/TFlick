@@ -7,7 +7,7 @@ Terminal autocomplete kiểu Fig / Amazon Q, viết lại bằng Rust: **popup �
 | Phase | File | Ước lượng | Kết quả |
 |---|---|---|---|
 | P0 ✅ | [p0-pty.md](p0-pty.md) | 1–2 ngày | `tflick` bọc shell trong PTY, trong suốt với người dùng |
-| P1 | [p1-shell-integration.md](p1-shell-integration.md) | 3–5 ngày | biết prompt, cwd, edit buffer + vị trí cursor |
+| P1 🟡 | [p1-shell-integration.md](p1-shell-integration.md) | 3–5 ngày | biết prompt, cwd, edit buffer + vị trí cursor |
 | P2 🟡 | [p2-popup-window.md](p2-popup-window.md) | 1–1,5 tuần | popup gpui (dữ liệu giả) bám đúng con trỏ |
 | P3 | [p3-parser-specs.md](p3-parser-specs.md) | 1–1,5 tuần | parse lệnh + nạp spec qua QuickJS |
 | P4 | [p4-suggestions-insert.md](p4-suggestions-insert.md) | 1 tuần | gợi ý thật, chọn bằng phím, chèn text |
