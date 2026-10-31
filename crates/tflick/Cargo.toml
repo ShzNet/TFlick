@@ -1,0 +1,11 @@
+[package]
+name = "tflick"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+crossterm = "0.29"
+portable-pty = "0.9"
+signal-hook = "0.3"

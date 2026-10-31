@@ -22,6 +22,8 @@
 - Cứ 50ms lại dời cửa sổ theo vị trí chuột (`setFrameOrigin:` qua objc2), đổi nội dung, ẩn/hiện xen kẽ.
 - Đo: có chớp không, CPU khi đứng yên (mục tiêu ~0%), RAM (mục tiêu < 40MB), trễ từ lúc nhận lệnh đến khi vẽ xong (mục tiêu < 16ms).
 - Click vào popup: terminal phía sau **không** được mất focus.
+- **Kết quả đo lần 1 (2026-10-31, `cargo run --release -p tflick-ui`, M-series, Rust 1.87):** build được; dời cửa sổ và vẽ lại ở 20Hz tốn ~3% CPU; mỗi lần update mất tối đa ~0,3ms; **RSS ~80MB, vượt mục tiêu 40MB**. Chớp hình và việc giữ focus phải kiểm tra bằng mắt.
+- Build dùng feature `runtime_shaders` của gpui vì máy chưa có Metal Toolchain. Muốn shader biên dịch sẵn thì chạy `xcodebuild -downloadComponent MetalToolchain` rồi bỏ feature này.
 - **Nếu không đạt:** quay lại cân nhắc AppKit thuần (`objc2-app-kit` NSPanel + NSVisualEffectView), rồi cập nhật D2 trong `README.md`.
 
 ### 2b. Daemon `tflick-ui`
