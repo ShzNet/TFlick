@@ -238,6 +238,9 @@ struct Shown {
 /// a few polls, so the mouse button is what really tells a drag is over.
 const SETTLE_POLLS: u32 = 6;
 
+/// Height of a standard macOS title bar, in points.
+const TITLE_BAR_H: f64 = 28.0;
+
 struct Popup {
     items: Vec<Item>,
     selected: usize,
@@ -324,7 +327,19 @@ impl Popup {
                             if !down {
                                 s.press = None;
                             } else if s.press.is_none() && s.still >= SETTLE_POLLS {
-                                s.press = Some((macos::mouse_location(), s.placed.at));
+                                let m = macos::mouse_location();
+                                s.press = Some((m, s.placed.at));
+                                // Pressed on the title bar: follow from the first mouse move
+                                // instead of waiting for AX's late first frame report.
+                                // ponytail: fixed title bar height; a tab dragged out of the
+                                // bar is followed by mistake until release corrects it.
+                                let f = p.frame;
+                                if (f.x..f.x + f.w).contains(&m.0)
+                                    && (f.y..f.y + TITLE_BAR_H).contains(&m.1)
+                                {
+                                    s.follow = true;
+                                    s.still = 0;
+                                }
                             }
                             if p.frame != s.placed.frame {
                                 // A title bar drag moves the window exactly with the mouse,
