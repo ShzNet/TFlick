@@ -95,10 +95,14 @@ fn main() -> Result<()> {
         let mut stdin = io::stdin().lock();
         let mut buf = [0u8; 4096];
         while let Ok(n) = stdin.read(&mut buf) {
-            if n == 0 || writer.write_all(&buf[..n]).is_err() {
+            if n == 0 {
                 break;
             }
-            input_popup.lock().unwrap().on_input(&buf[..n]);
+            // Strips the terminal's cursor position answers before they reach the shell.
+            let keys = input_popup.lock().unwrap().on_input(&buf[..n]);
+            if writer.write_all(&keys).is_err() {
+                break;
+            }
         }
     });
 
@@ -117,7 +121,15 @@ fn main() -> Result<()> {
             {
                 break;
             }
-            output_popup.lock().unwrap().on_output(&buf[..n]);
+            // Ask the terminal where its cursor is now; the answer arrives on stdin.
+            if output_popup.lock().unwrap().on_output(&buf[..n])
+                && stdout
+                    .write_all(ui::CURSOR_REQUEST)
+                    .and_then(|_| stdout.flush())
+                    .is_err()
+            {
+                break;
+            }
         }
         let _ = done_tx.send(());
     });
